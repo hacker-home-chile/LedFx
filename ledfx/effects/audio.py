@@ -1,5 +1,10 @@
+import errno
+import fcntl
 import logging
+import os
 import queue
+import stat
+import struct
 import threading
 import time
 from collections import deque
@@ -22,6 +27,234 @@ _LOGGER = logging.getLogger(__name__)
 
 MIN_MIDI = 21
 MAX_MIDI = 108
+
+
+class FIFOAudioStream:
+    """
+    Audio stream that reads PCM s16le data from a FIFO at /tmp/ledfx_audio.
+    Designed to be a drop-in alternative to sounddevice.InputStream.
+    """
+
+    FIFO_PATH = "/tmp/ledfx_audio"
+    SAMPLE_RATE = 44100
+    CHANNELS = 2  # stereo input, will be downmixed to mono
+    BYTES_PER_SAMPLE = 2  # s16le = 2 bytes per sample
+    CHUNK_SAMPLES = 1024  # samples per channel per read
+
+    def __init__(self, callback: callable):
+        """
+        Initialize the FIFO audio stream.
+
+        Args:
+            callback: Function to call with audio data.
+                      Signature: callback(audio_data, frame_count, time_info, status)
+        """
+        self.callback = callback
+        self._active = False
+        self._thread = None
+        self._fifo_fd = None
+        self._stop_event = threading.Event()
+
+    def start(self):
+        """Start the FIFO reader thread."""
+        if self._active:
+            _LOGGER.warning("FIFO audio stream already active")
+            return
+
+        _LOGGER.info(f"Starting FIFO audio stream from {self.FIFO_PATH}")
+        self._active = True
+        self._stop_event.clear()
+
+        self._thread = threading.Thread(
+            target=self._read_loop,
+            name="FIFOAudioReader",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        """Stop reading from FIFO."""
+        _LOGGER.info("Stopping FIFO audio stream")
+        self._active = False
+        self._stop_event.set()
+
+    def close(self):
+        """Clean up all resources."""
+        _LOGGER.info("Closing FIFO audio stream")
+        self.stop()
+
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                _LOGGER.warning("FIFO reader thread did not exit cleanly")
+
+        self._close_fifo()
+
+    def _ensure_fifo_exists(self) -> bool:
+        """
+        Create FIFO if it doesn't exist.
+
+        Returns:
+            True on success, False on failure.
+        """
+        try:
+            if not os.path.exists(self.FIFO_PATH):
+                _LOGGER.info(f"Creating FIFO at {self.FIFO_PATH}")
+                os.mkfifo(self.FIFO_PATH, 0o666)
+                _LOGGER.info(f"FIFO created successfully at {self.FIFO_PATH}")
+                return True
+            elif stat.S_ISFIFO(os.stat(self.FIFO_PATH).st_mode):
+                _LOGGER.debug(f"FIFO already exists at {self.FIFO_PATH}")
+                return True
+            else:
+                _LOGGER.error(
+                    f"{self.FIFO_PATH} exists but is not a FIFO"
+                )
+                return False
+        except PermissionError as e:
+            _LOGGER.error(f"Permission denied creating FIFO: {e}")
+            return False
+        except OSError as e:
+            _LOGGER.error(f"Failed to create FIFO: {e}")
+            return False
+
+    def _open_fifo_nonblocking(self) -> bool:
+        """
+        Open FIFO in non-blocking mode to avoid deadlock when no writer.
+
+        Returns:
+            True on success, False on failure.
+        """
+        if not self._ensure_fifo_exists():
+            return False
+
+        try:
+            # Open with O_NONBLOCK to avoid blocking if no writer
+            fd = os.open(self.FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
+
+            # Switch to blocking mode after open for efficient reads
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+
+            self._fifo_fd = fd
+            _LOGGER.info(f"FIFO opened at {self.FIFO_PATH}")
+            return True
+        except OSError as e:
+            _LOGGER.error(f"Failed to open FIFO: {e}")
+            return False
+
+    def _close_fifo(self):
+        """Close the FIFO file descriptor if open."""
+        if self._fifo_fd is not None:
+            try:
+                os.close(self._fifo_fd)
+                _LOGGER.debug("FIFO file descriptor closed")
+            except OSError as e:
+                _LOGGER.warning(f"Error closing FIFO: {e}")
+            finally:
+                self._fifo_fd = None
+
+    def _convert_pcm_to_float32(self, raw_bytes: bytes) -> np.ndarray:
+        """
+        Convert s16le PCM bytes to float32 numpy array.
+
+        Args:
+            raw_bytes: Raw bytes from FIFO (s16le format, stereo interleaved)
+
+        Returns:
+            np.ndarray of float32 samples in range [-1.0, 1.0], mono
+        """
+        # Unpack s16le (little-endian signed 16-bit integers)
+        num_samples = len(raw_bytes) // self.BYTES_PER_SAMPLE
+        fmt = f"<{num_samples}h"  # '<' = little-endian, 'h' = short (int16)
+        samples = struct.unpack(fmt, raw_bytes)
+
+        # Convert to float32 in range [-1.0, 1.0]
+        float_samples = np.array(
+            [s / 32767.0 if s >= 0 else s / 32768.0 for s in samples],
+            dtype=np.float32,
+        )
+
+        # Downmix stereo to mono (average left and right channels)
+        if self.CHANNELS == 2 and len(float_samples) >= 2:
+            float_samples = float_samples.reshape(-1, 2).mean(axis=1)
+
+        return float_samples
+
+    def _read_loop(self):
+        """Background thread that reads from FIFO and invokes callback."""
+        chunk_size_bytes = (
+            self.CHUNK_SAMPLES * self.CHANNELS * self.BYTES_PER_SAMPLE
+        )
+        retry_delay = 1.0
+        max_retry_delay = 30.0
+
+        while not self._stop_event.is_set():
+            try:
+                if not self._open_fifo_nonblocking():
+                    _LOGGER.warning(
+                        f"Could not open FIFO, retrying in {retry_delay}s"
+                    )
+                    self._stop_event.wait(retry_delay)
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    continue
+
+                retry_delay = 1.0  # Reset on success
+
+                # Read loop
+                while not self._stop_event.is_set() and self._active:
+                    try:
+                        raw_data = os.read(self._fifo_fd, chunk_size_bytes)
+
+                        if not raw_data:  # EOF - writer disconnected
+                            _LOGGER.info(
+                                "FIFO writer disconnected, reopening..."
+                            )
+                            self._close_fifo()
+                            self._stop_event.wait(1.0)
+                            break  # Restart outer loop to reopen
+
+                        # Convert and invoke callback
+                        try:
+                            audio_data = self._convert_pcm_to_float32(raw_data)
+                            if self._active:
+                                self.callback(audio_data, None, None, None)
+                        except struct.error as e:
+                            _LOGGER.warning(
+                                f"Malformed PCM data: {e}, skipping chunk"
+                            )
+
+                    except OSError as e:
+                        if e.errno == errno.EAGAIN:
+                            # Would block - no data available yet
+                            self._stop_event.wait(0.01)
+                            continue
+                        _LOGGER.error(f"FIFO read error: {e}")
+                        self._close_fifo()
+                        break
+
+            except FileNotFoundError:
+                _LOGGER.warning(
+                    f"FIFO {self.FIFO_PATH} not found, recreating..."
+                )
+                self._close_fifo()
+                self._stop_event.wait(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+
+            except PermissionError as e:
+                _LOGGER.critical(
+                    f"Permission denied for FIFO {self.FIFO_PATH}: {e}"
+                )
+                self._active = False
+                break
+
+            except Exception as e:
+                _LOGGER.error(f"Unexpected FIFO error: {e}")
+                self._close_fifo()
+                self._stop_event.wait(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+
+        _LOGGER.info("FIFO reader thread exiting")
 
 
 class AudioInputSource:
@@ -69,13 +302,15 @@ class AudioInputSource:
         Returns:
             integer: the sounddevice device index to use for audio input
         """
-        device_list = sd.query_devices()
+        sd_device_list = sd.query_devices()
+        # Use our full device list which includes custom devices (FIFO, Web Audio)
+        full_device_list = AudioInputSource.query_devices()
         default_output_device_idx = sd.default.device["output"]
         default_input_device_idx = sd.default.device["input"]
-        if len(device_list) == 0 or default_output_device_idx == -1:
+        if len(sd_device_list) == 0 or default_output_device_idx == -1:
             _LOGGER.warning("No audio output devices found.")
         else:
-            default_output_device_name = device_list[
+            default_output_device_name = sd_device_list[
                 default_output_device_idx
             ]["name"]
 
@@ -83,7 +318,7 @@ class AudioInputSource:
             _LOGGER.debug(
                 f"Looking for audio loopback device for default output device at index {default_output_device_idx}: {default_output_device_name}"
             )
-            for device_index, device in enumerate(device_list):
+            for device_index, device in enumerate(sd_device_list):
                 # sometimes the audio device name string is truncated, so we need to match what we have and Loopback but otherwise be sloppy
                 if (
                     default_output_device_name in device["name"]
@@ -105,7 +340,7 @@ class AudioInputSource:
         else:
             if default_input_device_idx in valid_device_indexes:
                 _LOGGER.debug(
-                    f"No audio loopback device found for default output device. Using default input device at index {default_input_device_idx}: {device_list[default_input_device_idx]['name']}"
+                    f"No audio loopback device found for default output device. Using default input device at index {default_input_device_idx}: {full_device_list[default_input_device_idx]['name']}"
                 )
                 return default_input_device_idx
             else:
@@ -113,25 +348,44 @@ class AudioInputSource:
                 if len(valid_device_indexes) > 0:
                     first_valid_idx = next(iter(valid_device_indexes))
                     _LOGGER.debug(
-                        f"No valid default audio input device found. Using first valid input device at index {first_valid_idx}: {device_list[first_valid_idx]['name']}"
+                        f"No valid default audio input device found. Using first valid input device at index {first_valid_idx}: {full_device_list[first_valid_idx]['name']}"
                     )
                     return first_valid_idx
 
     @staticmethod
     def query_hostapis():
-        return sd.query_hostapis() + ({"name": "WEB AUDIO"},)
+        return sd.query_hostapis() + (
+            {"name": "WEB AUDIO"},
+            {"name": "FIFO AUDIO"},
+        )
 
     @staticmethod
     def query_devices():
-        return sd.query_devices() + tuple(
+        base_devices = sd.query_devices()
+        hostapis_count = len(AudioInputSource.query_hostapis())
+
+        # WEB AUDIO devices (second to last hostapi)
+        web_audio_devices = tuple(
             {
-                "hostapi": len(AudioInputSource.query_hostapis()) - 1,
+                "hostapi": hostapis_count - 2,
                 "name": f"{client}",
                 "max_input_channels": 1,
                 "client": client,
             }
             for client in WEB_AUDIO_CLIENTS
         )
+
+        # FIFO AUDIO device (last hostapi)
+        fifo_device = (
+            {
+                "hostapi": hostapis_count - 1,
+                "name": "PCM FIFO (/tmp/ledfx_audio)",
+                "max_input_channels": 2,
+                "default_samplerate": 44100,
+            },
+        )
+
+        return base_devices + web_audio_devices + fifo_device
 
     @staticmethod
     def input_devices():
@@ -348,6 +602,8 @@ class AudioInputSource:
                         device["client"], self._audio_sample_callback
                     )
                 )
+            elif hostapis[device["hostapi"]]["name"] == "FIFO AUDIO":
+                self._stream = FIFOAudioStream(self._audio_sample_callback)
             else:
                 self._stream = self._audio.InputStream(
                     samplerate=int(device["default_samplerate"]),
