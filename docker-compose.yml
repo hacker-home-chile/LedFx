@@ -1,0 +1,19 @@
+services:
+  ledfx:
+    image: ghcr.io/hacker-home-chile/ledfx:latest
+    container_name: ledfx
+    restart: unless-stopped
+    ports:
+      - "8888:8888"  # Web UI
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LEDFX_FIFO_PATH=/opt/fifos/ledfx_audio
+    volumes:
+      - ledfx-config:/home/ledfx/ledfx-config  # Persist configuration
+      - /opt/fifos:/opt/fifos                  # FIFO audio input directory
+    entrypoint: ""
+    command: ["ledfx", "-c", "/home/ledfx/ledfx-config"]
+
+volumes:
+  ledfx-config:

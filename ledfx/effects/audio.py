@@ -31,11 +31,12 @@ MAX_MIDI = 108
 
 class FIFOAudioStream:
     """
-    Audio stream that reads PCM s16le data from a FIFO at /tmp/ledfx_audio.
+    Audio stream that reads PCM s16le data from a FIFO.
+    Path configurable via LEDFX_FIFO_PATH env var (default: /opt/fifos/ledfx_audio).
     Designed to be a drop-in alternative to sounddevice.InputStream.
     """
 
-    FIFO_PATH = "/tmp/ledfx_audio"
+    FIFO_PATH = os.environ.get("LEDFX_FIFO_PATH", "/opt/fifos/ledfx_audio")
     SAMPLE_RATE = 44100
     CHANNELS = 2  # stereo input, will be downmixed to mono
     BYTES_PER_SAMPLE = 2  # s16le = 2 bytes per sample
@@ -379,7 +380,7 @@ class AudioInputSource:
         fifo_device = (
             {
                 "hostapi": hostapis_count - 1,
-                "name": "PCM FIFO (/tmp/ledfx_audio)",
+                "name": f"PCM FIFO ({FIFOAudioStream.FIFO_PATH})",
                 "max_input_channels": 2,
                 "default_samplerate": 44100,
             },
