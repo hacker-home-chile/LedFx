@@ -40,7 +40,8 @@ class FIFOAudioStream:
     SAMPLE_RATE = 44100
     CHANNELS = 2  # stereo input, will be downmixed to mono
     BYTES_PER_SAMPLE = 2  # s16le = 2 bytes per sample
-    CHUNK_SAMPLES = 1024  # samples per channel per read
+    # Match default callback rate of 60 Hz (same as sounddevice blocksize calculation)
+    CHUNK_SAMPLES = SAMPLE_RATE // 60  # 735 samples per callback
 
     def __init__(self, callback: callable):
         """
@@ -62,7 +63,7 @@ class FIFOAudioStream:
             _LOGGER.warning("FIFO audio stream already active")
             return
 
-        _LOGGER.info(f"Starting FIFO audio stream from {self.FIFO_PATH}")
+        _LOGGER.warning(f"FIFOAudioStream.start() - Starting FIFO audio stream from {self.FIFO_PATH}")
         self._active = True
         self._stop_event.clear()
 
@@ -71,7 +72,9 @@ class FIFOAudioStream:
             name="FIFOAudioReader",
             daemon=True,
         )
+        _LOGGER.warning(f"FIFOAudioStream.start() - Thread created, calling start()...")
         self._thread.start()
+        _LOGGER.warning(f"FIFOAudioStream.start() - Thread started: {self._thread.is_alive()}")
 
     def stop(self):
         """Stop reading from FIFO."""
@@ -100,23 +103,23 @@ class FIFOAudioStream:
         """
         try:
             if not os.path.exists(self.FIFO_PATH):
-                _LOGGER.info(f"Creating FIFO at {self.FIFO_PATH}")
+                _LOGGER.warning(f"Creating FIFO at {self.FIFO_PATH}")
                 os.mkfifo(self.FIFO_PATH, 0o666)
-                _LOGGER.info(f"FIFO created successfully at {self.FIFO_PATH}")
+                _LOGGER.warning(f"FIFO created successfully at {self.FIFO_PATH}")
                 return True
             elif stat.S_ISFIFO(os.stat(self.FIFO_PATH).st_mode):
-                _LOGGER.debug(f"FIFO already exists at {self.FIFO_PATH}")
+                _LOGGER.warning(f"FIFO already exists at {self.FIFO_PATH}")
                 return True
             else:
-                _LOGGER.error(
+                _LOGGER.warning(
                     f"{self.FIFO_PATH} exists but is not a FIFO"
                 )
                 return False
         except PermissionError as e:
-            _LOGGER.error(f"Permission denied creating FIFO: {e}")
+            _LOGGER.warning(f"Permission denied creating FIFO: {e}")
             return False
         except OSError as e:
-            _LOGGER.error(f"Failed to create FIFO: {e}")
+            _LOGGER.warning(f"Failed to create FIFO: {e}")
             return False
 
     def _open_fifo_nonblocking(self) -> bool:
@@ -131,6 +134,7 @@ class FIFOAudioStream:
 
         try:
             # Open with O_NONBLOCK to avoid blocking if no writer
+            _LOGGER.warning(f"Opening FIFO with O_NONBLOCK: {self.FIFO_PATH}")
             fd = os.open(self.FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
 
             # Switch to blocking mode after open for efficient reads
@@ -138,10 +142,10 @@ class FIFOAudioStream:
             fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
 
             self._fifo_fd = fd
-            _LOGGER.info(f"FIFO opened at {self.FIFO_PATH}")
+            _LOGGER.warning(f"FIFO opened successfully at {self.FIFO_PATH}")
             return True
         except OSError as e:
-            _LOGGER.error(f"Failed to open FIFO: {e}")
+            _LOGGER.warning(f"Failed to open FIFO: {e}")
             return False
 
     def _close_fifo(self):
@@ -184,6 +188,7 @@ class FIFOAudioStream:
 
     def _read_loop(self):
         """Background thread that reads from FIFO and invokes callback."""
+        _LOGGER.warning("FIFOAudioStream._read_loop() started")
         chunk_size_bytes = (
             self.CHUNK_SAMPLES * self.CHANNELS * self.BYTES_PER_SAMPLE
         )
@@ -192,6 +197,7 @@ class FIFOAudioStream:
 
         while not self._stop_event.is_set():
             try:
+                _LOGGER.warning(f"Attempting to open FIFO: {self.FIFO_PATH}")
                 if not self._open_fifo_nonblocking():
                     _LOGGER.warning(
                         f"Could not open FIFO, retrying in {retry_delay}s"
@@ -203,9 +209,11 @@ class FIFOAudioStream:
                 retry_delay = 1.0  # Reset on success
 
                 # Read loop
+                _LOGGER.warning(f"Entering read loop. active={self._active}, stop_event={self._stop_event.is_set()}")
                 while not self._stop_event.is_set() and self._active:
                     try:
                         raw_data = os.read(self._fifo_fd, chunk_size_bytes)
+                        _LOGGER.debug(f"Read {len(raw_data)} bytes from FIFO")
 
                         if not raw_data:  # EOF - writer disconnected
                             _LOGGER.info(
@@ -255,7 +263,7 @@ class FIFOAudioStream:
                 self._stop_event.wait(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
 
-        _LOGGER.info("FIFO reader thread exiting")
+        _LOGGER.warning("FIFO reader thread exiting")
 
 
 class AudioInputSource:
@@ -604,7 +612,9 @@ class AudioInputSource:
                     )
                 )
             elif hostapis[device["hostapi"]]["name"] == "FIFO AUDIO":
+                _LOGGER.warning("Creating FIFOAudioStream...")
                 self._stream = FIFOAudioStream(self._audio_sample_callback)
+                _LOGGER.warning(f"FIFOAudioStream created: {self._stream}")
             else:
                 self._stream = self._audio.InputStream(
                     samplerate=int(device["default_samplerate"]),
@@ -622,11 +632,13 @@ class AudioInputSource:
 
             self.resampler = samplerate.Resampler("sinc_fastest", channels=1)
 
-            _LOGGER.info(
+            _LOGGER.warning(
                 f"Audio source opened: {hostapis[device['hostapi']]['name']}: {device.get('name', device.get('client'))}"
             )
 
+            _LOGGER.warning("Calling self._stream.start()...")
             self._stream.start()
+            _LOGGER.warning("self._stream.start() returned")
             self._audio_stream_active = True
 
         try:
@@ -662,9 +674,12 @@ class AudioInputSource:
 
     def subscribe(self, callback):
         """Registers a callback with the input source"""
+        _LOGGER.warning(f"AudioInputSource.subscribe() called. callbacks={len(self._callbacks)}, active={self._audio_stream_active}")
         self._callbacks.append(callback)
         if len(self._callbacks) > 0 and not self._audio_stream_active:
+            _LOGGER.warning("AudioInputSource.subscribe() -> calling activate()")
             self.activate()
+            _LOGGER.warning(f"AudioInputSource.subscribe() -> activate() done. stream_active={self._audio_stream_active}")
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
@@ -702,10 +717,16 @@ class AudioInputSource:
         """Callback for when a new audio sample is acquired"""
         # time_start = time.time()
         # self._raw_audio_sample = np.frombuffer(in_data, dtype=np.float32)
-        raw_sample = np.frombuffer(in_data, dtype=np.float32)
+        try:
+            raw_sample = np.frombuffer(in_data, dtype=np.float32)
+        except Exception as e:
+            _LOGGER.warning(f"Failed to convert audio data: {e}, type={type(in_data)}")
+            return
 
         in_sample_len = len(raw_sample)
         out_sample_len = MIC_RATE // self._config["sample_rate"]
+
+        _LOGGER.debug(f"Audio callback: in_len={in_sample_len}, out_len={out_sample_len}")
 
         if in_sample_len != out_sample_len:
             # Simple resampling
@@ -715,11 +736,26 @@ class AudioInputSource:
                 out_sample_len / in_sample_len,
                 # end_of_input=True
             )
+
+            # Resampler output length can vary by a few samples due to windowing
+            # Pad with zeros or truncate to exact length
+            actual_len = len(processed_audio_sample)
+            if actual_len < out_sample_len:
+                # Pad with zeros
+                processed_audio_sample = np.pad(
+                    processed_audio_sample,
+                    (0, out_sample_len - actual_len),
+                    mode='constant'
+                )
+            elif actual_len > out_sample_len:
+                # Truncate
+                processed_audio_sample = processed_audio_sample[:out_sample_len]
         else:
             processed_audio_sample = raw_sample
 
+        # Sanity check (should always pass now with padding/truncation)
         if len(processed_audio_sample) != out_sample_len:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 f"Discarded malformed audio frame - {len(processed_audio_sample)} samples, expected {out_sample_len}"
             )
             return
@@ -745,6 +781,7 @@ class AudioInputSource:
 
     def _invoke_callbacks(self):
         """Notifies all clients of the new data"""
+        _LOGGER.debug(f"Invoking {len(self._callbacks)} callbacks")
         for callback in self._callbacks:
             callback()
 
@@ -1162,18 +1199,22 @@ class AudioReactiveEffect(Effect):
         self.audio = None
 
     def activate(self, channel):
-        _LOGGER.info("Activating AudioReactiveEffect.")
+        _LOGGER.warning("AudioReactiveEffect.activate() called!")
         super().activate(channel)
 
         if not self._ledfx.audio or id(AudioAnalysisSource) != id(
             self._ledfx.audio.__class__
         ):
+            _LOGGER.warning("Creating new AudioAnalysisSource...")
             self._ledfx.audio = AudioAnalysisSource(
                 self._ledfx, self._ledfx.config.get("audio", {})
             )
+            _LOGGER.warning("AudioAnalysisSource created.")
 
         self.audio = self._ledfx.audio
+        _LOGGER.warning("Subscribing to audio...")
         self._ledfx.audio.subscribe(self._audio_data_updated)
+        _LOGGER.warning("AudioReactiveEffect.activate() complete.")
 
     def deactivate(self):
         _LOGGER.info("Deactivating AudioReactiveEffect.")

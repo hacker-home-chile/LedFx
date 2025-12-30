@@ -491,7 +491,9 @@ class Virtual:
                     f"No effect was set (effect is None). Skipping activation for virtual '{self.id}'."
                 )
                 return
+            _LOGGER.warning(f"Virtual {self.id}: Calling effect.activate()...")
             self._active_effect.activate(self)
+            _LOGGER.warning(f"Virtual {self.id}: effect.activate() returned.")
             self._ledfx.events.fire_event(
                 EffectSetEvent(
                     self._active_effect.name,
