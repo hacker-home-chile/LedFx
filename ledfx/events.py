@@ -18,6 +18,7 @@ class Event:
     DEVICES_UPDATED = "devices_updated"
     VIRTUAL_UPDATE = "virtual_update"
     VISUALISATION_UPDATE = "visualisation_update"
+    FRONTEND_VISUALISER_DATA = "frontend_visualiser_data"
     GRAPH_UPDATE = "graph_update"
     EFFECT_SET = "effect_set"
     EFFECT_UPDATED = "effect_updated"
@@ -29,16 +30,21 @@ class Event:
     GLOBAL_PAUSE = "global_pause"
     VIRTUAL_PAUSE = "virtual_pause"
     AUDIO_INPUT_DEVICE_CHANGED = "audio_input_device_changed"
+    AUDIO_DEVICE_LIST_CHANGED = "audio_device_list_changed"
     VIRTUAL_DIAG = "virtual_diag"
     GENERAL_DIAG = "general_diag"
     CLIENT_CONNECTED = "client_connected"
     CLIENT_DISCONNECTED = "client_disconnected"
     CLIENT_SYNC = "client_sync"
+    CLIENTS_UPDATED = "clients_updated"
+    CLIENT_BROADCAST = "client_broadcast"
     PLAYLIST_STARTED = "playlist_started"
     PLAYLIST_ADVANCED = "playlist_advanced"
     PLAYLIST_STOPPED = "playlist_stopped"
     PLAYLIST_PAUSED = "playlist_paused"
     PLAYLIST_RESUMED = "playlist_resumed"
+    COLORS_UPDATED = "colors_updated"
+    SONG_DETECTED = "song_detected"
 
     def __init__(self, type: str):
         """
@@ -54,6 +60,44 @@ class Event:
         Returns a dictionary representation of the event's attributes.
         """
         return self.__dict__
+
+
+class SongDetectedEvent(Event):
+    """Event emitted when media/song info is detected"""
+
+    def __init__(
+        self,
+        title: str,
+        artist: str,
+        album: str = "",
+        thumbnail: str | None = None,
+        position: float | None = None,
+        duration: float | None = None,
+        playing: bool = False,
+        timestamp: float | None = None,
+    ):
+        """
+        Initializes a SongDetectedEvent with media information.
+
+        Args:
+            title: The title of the song/track.
+            artist: The artist name.
+            album: The album name (optional).
+            thumbnail: Path or URL to album artwork (optional).
+            position: Current playback position in seconds (optional).
+            duration: Total duration in seconds (optional).
+            playing: Whether the media is currently playing.
+            timestamp: Unix timestamp of when the info was captured.
+        """
+        super().__init__(Event.SONG_DETECTED)
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.thumbnail = thumbnail
+        self.position = position
+        self.duration = duration
+        self.playing = playing
+        self.timestamp = timestamp
 
 
 class GeneralDiagEvent(Event):
@@ -136,6 +180,36 @@ class ClientSyncEvent(Event):
         self.client_id = client_id
 
 
+class ClientsUpdatedEvent(Event):
+    """Event emitted when client list/metadata changes"""
+
+    def __init__(self):
+        super().__init__(Event.CLIENTS_UPDATED)
+
+
+class ClientBroadcastEvent(Event):
+    """Event emitted when a client broadcasts a message"""
+
+    def __init__(
+        self,
+        broadcast_type: str,
+        broadcast_id: str,
+        sender_uuid: str,
+        sender_name: str | None,
+        sender_type: str,
+        target_uuids: list[str],
+        payload: dict,
+    ):
+        super().__init__(Event.CLIENT_BROADCAST)
+        self.broadcast_type = broadcast_type
+        self.broadcast_id = broadcast_id
+        self.sender_uuid = sender_uuid
+        self.sender_name = sender_name
+        self.sender_type = sender_type
+        self.target_uuids = target_uuids
+        self.payload = payload
+
+
 class DeviceUpdateEvent(Event):
     """Event emitted when a device's pixels are updated"""
 
@@ -198,6 +272,13 @@ class AudioDeviceChangeEvent(Event):
         self.audio_input_device_name = audio_input_device_name
 
 
+class AudioDeviceListChangedEvent(Event):
+    """Event emitted when the system audio device list changes (devices added/removed)"""
+
+    def __init__(self):
+        super().__init__(Event.AUDIO_DEVICE_LIST_CHANGED)
+
+
 class GraphUpdateEvent(Event):
     """Event emitted when an audio graph is updated"""
 
@@ -229,6 +310,25 @@ class VisualisationUpdateEvent(Event):
         self.vis_id = vis_id
         self.pixels = pixels
         self.shape = shape
+
+
+class FrontendVisualiserDataEvent(Event):
+    """Event fired when frontend sends captured visualiser pixel data to backend
+    Used for frontend-driven effects (opposite direction of VisualisationUpdateEvent)
+    """
+
+    def __init__(
+        self,
+        vis_id: str,  # identifier for the visualiser source
+        pixels: np.ndarray,  # RGB pixel array
+        shape: tuple,  # (rows, cols) shape of the pixel data
+        client_id: str,  # UUID of the client that sent the data
+    ):
+        super().__init__(Event.FRONTEND_VISUALISER_DATA)
+        self.vis_id = vis_id
+        self.pixels = pixels
+        self.shape = shape
+        self.client_id = client_id
 
 
 class EffectSetEvent(Event):
@@ -417,6 +517,15 @@ class BaseConfigUpdateEvent(Event):
         self.config = config
 
 
+class ColorsUpdatedEvent(Event):
+    """
+    Event emitted when user-defined colors or gradients are added, modified, or deleted.
+    """
+
+    def __init__(self):
+        super().__init__(Event.COLORS_UPDATED)
+
+
 class LedFxShutdownEvent(Event):
     """Event emitted when LedFx is shutting down"""
 
@@ -425,9 +534,9 @@ class LedFxShutdownEvent(Event):
 
 
 class EventListener:
-    def __init__(self, callback: Callable, event_filter: dict = {}):
+    def __init__(self, callback: Callable, event_filter: dict | None = None):
         self.callback = callback
-        self.filter = event_filter
+        self.filter = event_filter if event_filter is not None else {}
 
     def filter_event(self, event):
         event_dict = event.to_dict()
@@ -445,18 +554,21 @@ class Events:
 
     def fire_event(self, event: Event) -> None:
         listeners = self._listeners.get(event.event_type, [])
+
         if not listeners:
             return
 
         for listener in listeners:
-            if not listener.filter_event(event):
+            filtered = listener.filter_event(event)
+
+            if not filtered:
                 self._ledfx.loop.call_soon_threadsafe(listener.callback, event)
 
     def add_listener(
         self,
         callback: Callable,
         event_type: str,
-        event_filter: dict = {},
+        event_filter: dict | None = None,
     ) -> None:
         listener = EventListener(callback, event_filter)
         if event_type in self._listeners:

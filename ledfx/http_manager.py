@@ -21,7 +21,7 @@ class HttpServer:
     def __init__(self, ledfx, host, port, port_s):
         """Initialize the HTTP server"""
 
-        self.app = web.Application()
+        self.app = web.Application(client_max_size=5 * 1024 * 1024)  # 5 MB
         self.api = RestApi(ledfx)
 
         self.register_routes()
@@ -55,6 +55,22 @@ class HttpServer:
             "/static",
             path=ledfx_frontend.where() + "/static",
             name="static",
+        )
+        self.app.router.add_static(
+            "/modules",
+            path=ledfx_frontend.where() + "/modules",
+            name="modules",
+        )
+        self.app.router.add_static(
+            "/fonts",
+            path=ledfx_frontend.where() + "/fonts",
+            name="fonts",
+        )
+        self.app.router.add_route("get", "/fonts.css", self.fonts_css)
+
+    async def fonts_css(self, response):
+        return web.FileResponse(
+            path=ledfx_frontend.where() + "/fonts.css", status=200
         )
 
     async def index(self, response):
@@ -110,7 +126,7 @@ class HttpServer:
             self.base_url = ("http{}://localhost:{}").format(
                 "s" if ssl_context else "", port
             )
-        print(("Started webinterface at {}").format(self.base_url))
+        _LOGGER.info("Started webinterface at %s", self.base_url)
 
     def handle_start_error(self, error):
         _LOGGER.error(

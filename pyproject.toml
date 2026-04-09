@@ -1,8 +1,6 @@
 [project]
-authors = [
-    {name = "LedFx Developers"},
-]
-license = {text = "GPL-3.0 License"}
+authors = [{ name = "LedFx Developers" }]
+license = { text = "GPL-3.0 License" }
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "numpy>=2.0.0,<3.0.0",
@@ -29,6 +27,7 @@ dependencies = [
     "zeroconf>=0.131.0",
     "pillow>=10.1.0",
     "flux-led>=1.0.4",
+    "lifx-async>=5.1.0",
     "python-osc>=1.8.3",
     "pybase64~=1.4.0",
     "mss~=10.1.0",
@@ -37,14 +36,16 @@ dependencies = [
     "rpi-ws281x>=4.3.0; sys_platform == \"linux\"",
     "stupidartnet>=1.6.0,<2.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
-    "vnoise>=0.1.0,<1.0.0",
+    "pyfastnoiselite>=0.0.7",
     "netifaces2>=0.0.22",
     "packaging>=21.0",
     "xled>=0.7.0",
     "samplerate-ledfx>=0.2.3",
+    "audio-hotplug>=0.1.0",
+    "aiosendspin>=4.0.0; python_version >= '3.12'",
 ]
 name = "LedFx"
-version = "2.1.2"
+version = "2.1.7"
 description = "A network based light effect controller"
 readme = "README.rst"
 
@@ -58,11 +59,11 @@ dev = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-asyncio>=1.2.0,<1.4.0",
     "pytest-order<2.0.0,>=1.2.0",
+    "pytest-timeout>=2.3.0,<3.0.0",
     "ruff>=0.14.0,<0.15.0",
+    "lifx-emulator-core>=3.1.0",
 ]
-build = [
-    "pyinstaller<7.0.0,>=6.3.0",
-]
+build = ["pyinstaller<7.0.0,>=6.3.0"]
 docs = [
     "sphinx<8.2.4; python_version >= \"3.10\"",
     "sphinxcontrib-websupport==2.0.0; python_version >= \"3.10\"",
@@ -106,13 +107,11 @@ ledfx = "ledfx.__main__:main"
 ledfx-loopback-install = "loopback.__main__:copy_lib"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = [
-    "dist",
-    "build",
-    ".tox",
-]
+norecursedirs = ["dist", "build", ".tox"]
 filterwarnings = "ignore::DeprecationWarning"
 asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "auto"
+timeout = 30
 
 [tool.uv]
 # We want to use copy here, since symlink mode means we can't use our own portaudio dll
@@ -120,6 +119,8 @@ asyncio_default_fixture_loop_scope = "function"
 link-mode = "copy"
 default-groups = []
 
+[tool.ruff.lint]
+select = ["G004"]
 
 [tool.black]
 line-length = 79

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pybase64
+from audio_hotplug import create_monitor
 
 from ledfx.color import (
     LEDFX_COLORS,
@@ -29,7 +30,9 @@ from ledfx.config import (
 from ledfx.consts import PROJECT_VERSION
 from ledfx.devices import Devices
 from ledfx.effects import Effects
+from ledfx.effects.audio import AudioInputSource
 from ledfx.events import (
+    AudioDeviceListChangedEvent,
     Event,
     Events,
     LedFxShutdownEvent,
@@ -127,6 +130,9 @@ class LedFxCore:
         self.loop.set_exception_handler(self.loop_exception_handler)
         asyncio.set_event_loop(self.loop)
 
+        # Audio device monitor will be started after loop is running
+        self.audio_device_monitor = None
+
         if self.config.get("debug_asyncio", False):
             self.loop.set_debug(True)
 
@@ -164,6 +170,64 @@ class LedFxCore:
     def dev_enabled(self):
         return self.config["dev_mode"]
 
+    def _start_audio_device_monitor(self):
+        """Start the audio device monitor for the current platform."""
+        try:
+            self.audio_device_monitor = create_monitor(
+                loop=self.loop, debounce_ms=200
+            )
+            if self.audio_device_monitor:
+                # Start monitoring with callback to refresh device list
+                self.audio_device_monitor.start(self._on_audio_devices_changed)
+                _LOGGER.info("Audio device monitor enabled")
+            else:
+                _LOGGER.debug(
+                    "Audio device monitoring not available on this platform"
+                )
+        except Exception as e:
+            _LOGGER.warning(
+                "Failed to start audio device monitor: %s. "
+                "Device list will not update automatically when devices are added/removed.",
+                e,
+            )
+
+    def _on_audio_devices_changed(self):
+        """
+        Callback for audio-hotplug library when device changes detected.
+
+        Delegates all audio recovery logic to AudioInputSource.handle_device_list_change()
+        to keep audio lifecycle management in one place.
+        """
+        # Let AudioInputSource handle the full lifecycle: stop, refresh, recover, restart
+        if hasattr(self, "audio") and self.audio:
+            self.audio.handle_device_list_change()
+        else:
+            # If no audio instance yet, just refresh the device list
+            AudioInputSource.refresh_device_list()
+
+        # Fire LedFx event for any listeners (e.g., websocket notifications)
+        self.events.fire_event(AudioDeviceListChangedEvent())
+
+        _LOGGER.info("Audio device list updated in response to system change")
+
+    def _load_sendspin_servers(self):
+        """Load Sendspin server configurations from config into the audio system."""
+        from ledfx.sendspin import SENDSPIN_AVAILABLE
+
+        if not SENDSPIN_AVAILABLE:
+            return
+
+        from ledfx.effects.audio import SENDSPIN_SERVERS
+
+        sendspin_config = self.config.get("sendspin_servers", {})
+        SENDSPIN_SERVERS.clear()
+        for name, config in sendspin_config.items():
+            SENDSPIN_SERVERS[name] = config
+            _LOGGER.info("Sendspin server configured: %s", name)
+
+        if sendspin_config:
+            _LOGGER.info("Loaded %d Sendspin server(s)", len(sendspin_config))
+
     def loop_exception_handler(self, loop, context):
         kwargs = {}
         exception = context.get("exception")
@@ -175,7 +239,8 @@ class LedFxCore:
             )
 
         _LOGGER.error(
-            "Exception in core event loop: {}".format(context["message"]),
+            "Exception in core event loop: %s",
+            context["message"],
             **kwargs,
         )
 
@@ -190,7 +255,8 @@ class LedFxCore:
             webbrowser.get().open(url)
         except webbrowser.Error:
             _LOGGER.warning(
-                f"Failed to open default web browser. To access LedFx's web ui, open {url} in your browser."
+                "Failed to open default web browser. To access LedFx's web ui, open %s in your browser.",
+                url,
             )
 
     def setup_icon_menu(self):
@@ -333,7 +399,9 @@ class LedFxCore:
                 latest_version = UpdateChecker.get_latest_version()
                 release_url = UpdateChecker.get_release_url()
                 _LOGGER.warning(
-                    f"New version of LedFx available: {latest_version} - {release_url}"
+                    "New version of LedFx available: %s - %s",
+                    latest_version,
+                    release_url,
                 )
 
                 if self.icon and self.icon.HAS_NOTIFICATION:
@@ -379,7 +447,9 @@ class LedFxCore:
         return self.exit_code
 
     async def async_start(self, open_ui=False, pause_all=False):
-        _LOGGER.info(f"Starting LedFx, listening on {self.host}:{self.port}")
+        _LOGGER.info(
+            "Starting LedFx, listening on %s:%s", self.host, self.port
+        )
 
         if (
             self.icon is not None
@@ -427,6 +497,11 @@ class LedFxCore:
         self.devices.create_from_config(self.config["devices"])
         await self.devices.async_initialize_devices()
 
+        # Load Sendspin server configurations into audio system BEFORE
+        # virtuals, since virtuals with active effects trigger audio
+        # initialization which validates the audio_device index.
+        self._load_sendspin_servers()
+
         self.zeroconf = ZeroConfRunner(ledfx=self)
         self.virtuals.create_from_config(
             self.config["virtuals"], pause_all=pause_all
@@ -436,6 +511,9 @@ class LedFxCore:
         # Start the HTTP server once internal registries are initialized so
         # websockets and REST endpoints are fully ready before the UI opens.
         await self.http.start(get_ssl_certs(config_dir=self.config_dir))
+
+        # Start audio device monitor for OS-level device change notifications
+        self._start_audio_device_monitor()
 
         # Only open the UI once devices and virtuals have been initialized
         if open_ui:
@@ -467,19 +545,24 @@ class LedFxCore:
                 output_file_path = os.path.join(project_root, output_file_name)
 
                 _LOGGER.info(
-                    f"Attempting to write TypeScript types to: {output_file_path}"
+                    "Attempting to write TypeScript types to: %s",
+                    output_file_path,
                 )
                 with open(output_file_path, "w", encoding="utf-8") as f:
                     f.write(ts_code_string)
                 _LOGGER.info(
-                    f"Successfully wrote TypeScript types to {output_file_path}"
+                    "Successfully wrote TypeScript types to %s",
+                    output_file_path,
                 )
 
             except OSError as e:
-                _LOGGER.error(f"IOError writing TypeScript types to file: {e}")
+                _LOGGER.error(
+                    "IOError writing TypeScript types to file: %s", e
+                )
             except Exception as e:
                 _LOGGER.error(
-                    f"Unexpected error writing TypeScript types to file: {e}"
+                    "Unexpected error writing TypeScript types to file: %s",
+                    e,
                 )
 
             self.stop(5)
@@ -490,11 +573,13 @@ class LedFxCore:
         if self.config["startup_scene_id"] != "":
             if self.scenes.activate(self.config["startup_scene_id"]):
                 _LOGGER.info(
-                    f"startup_scene_id; {self.config['startup_scene_id']} activated."
+                    "startup_scene_id; %s activated.",
+                    self.config["startup_scene_id"],
                 )
             else:
                 _LOGGER.warning(
-                    f"startup_scene_id: {self.config['startup_scene_id']} not found."
+                    "startup_scene_id: %s not found.",
+                    self.config["startup_scene_id"],
                 )
 
         if pause_all:
@@ -508,11 +593,21 @@ class LedFxCore:
         if not self.loop:
             return
 
-        print("Stopping LedFx.")
+        _LOGGER.info("Stopping LedFx.")
         try:
             _LOGGER.info(self.EXIT_CODES.get(exit_code, "Unknown exit code."))
             # Fire a shutdown event
             self.events.fire_event(LedFxShutdownEvent())
+
+            # Stop audio device monitor
+            if self.audio_device_monitor:
+                try:
+                    self.audio_device_monitor.stop()
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Error stopping audio device monitor: %s", e
+                    )
+
             _LOGGER.info("Stopping HTTP Server...")
             await self.http.stop()
 
@@ -524,7 +619,7 @@ class LedFxCore:
             ]
             if tasks:
                 _LOGGER.debug(
-                    f"Killing {len(tasks)} tasks prior to shutdown..."
+                    "Killing %s tasks prior to shutdown...", len(tasks)
                 )
                 # Cancel all tasks concurrently
                 group = asyncio.gather(*tasks, return_exceptions=True)
@@ -539,7 +634,7 @@ class LedFxCore:
             save_config(config=self.config, config_dir=self.config_dir)
 
         except Exception as e:
-            _LOGGER.error(f"An error occurred while stopping: {e}")
+            _LOGGER.error("An error occurred while stopping: %s", e)
             self.exit_code = 1
 
         finally:

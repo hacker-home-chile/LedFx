@@ -9,15 +9,31 @@ Information about LedFx
 
 **GET**
 
-Returns basic information about the LedFx instance as JSON
+Returns basic information about the LedFx instance as JSON, including a `features` object indicating which optional capabilities are available on this backend.
 
 ``` json
 {
   "url": "http://127.0.0.1:8888",
-  "name": "LedFx",
-  "version": "0.3.0"
+  "name": "LedFx Controller",
+  "version": "2.1.5",
+  "github_sha": "unknown",
+  "is_release": "false",
+  "developer_mode": false,
+  "features": {
+    "sendspin": true
+  }
 }
 ```
+
+### Features
+
+The `features` object provides boolean flags for optional backend capabilities that may not be available in all environments. Frontends should query this on startup to conditionally show or hide UI sections.
+
+| Feature | Description | Requirement |
+|---------|-------------|-------------|
+| `sendspin` | Sendspin synchronized multi-room audio integration | Python 3.12+ and `aiosendspin` package |
+
+When a feature is `false`, the corresponding API endpoints will return error responses and the frontend should hide the related UI.
 
 ## /api/config
 
@@ -108,6 +124,8 @@ Query and manage audio input devices
 **GET**
 
 Returns a list of all available audio input devices and the currently active device index.
+
+**Note:** The device list is automatically refreshed when the system detects audio device changes (devices added/removed). When an `audio_device_list_changed` WebSocket event is received, calling this endpoint will return the updated device list.
 
 example response:
 
@@ -403,6 +421,65 @@ configuration as JSON
 **DELETE (upcoming)**
 
 Deletes the effect with the matching *effect_id*.
+
+## /api/colors
+
+Query and manage colors and gradients
+
+**GET**
+
+Returns all colors and gradients (both builtin and user-defined)
+
+``` json
+{
+  "colors": {
+    "builtin": {
+      "red": "#ff0000",
+      "green": "#00ff00"
+    },
+    "user": {
+      "my_custom_color": "#ff00ff"
+    }
+  },
+  "gradients": {
+    "builtin": {
+      "rainbow": "linear-gradient(...)"
+    },
+    "user": {
+      "my_gradient": "linear-gradient(...)"
+    }
+  }
+}
+```
+
+**POST**
+
+Creates or updates user-defined colors or gradients
+
+``` json
+{
+  "my_red_color": "#ff0000",
+  "my_gradient": "linear-gradient(90deg, #ff0000, #0000ff)"
+}
+```
+
+**DELETE**
+
+Deletes user-defined colors or gradients (legacy endpoint, requires JSON body)
+
+``` json
+["my_red_color", "my_gradient"]
+```
+
+## /api/colors/\<color_id\>
+
+Delete a specific color or gradient by ID
+
+**DELETE**
+
+Deletes a user-defined color or gradient with the matching *color_id*
+
+Returns success if the color/gradient was deleted, or an error if not found
 
 ## /api/virtuals
 

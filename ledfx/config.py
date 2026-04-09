@@ -1,4 +1,5 @@
 import datetime
+import ipaddress
 import json
 import logging
 import os
@@ -46,6 +47,8 @@ CORE_CONFIG_KEYS_NO_RESTART = [
     "flush_on_deactivate",
     "ui_brightness_boost",
     "startup_scene_id",
+    "lifx_broadcast_address",
+    "lifx_discovery_timeout",
 ]
 # Collection of keys that are used for visualisation configuration - used to check if we need to restart the visualisation event listeners
 VISUALISATION_CONFIG_KEYS = [
@@ -110,6 +113,26 @@ WLED_CONFIG_SCHEMA = vol.Schema(
     dict(map(wled_optional_generator, _default_wled_settings.items()))
 )
 
+
+def validate_ipv4_address(value):
+    """Validate that value is a valid IPv4 address (including broadcast).
+
+    Args:
+        value: The value to validate.
+
+    Returns:
+        str: The validated IPv4 address string.
+
+    Raises:
+        vol.Invalid: If the value is not a valid IPv4 address.
+    """
+    try:
+        addr = ipaddress.IPv4Address(value)
+        return str(addr)
+    except ipaddress.AddressValueError:
+        raise vol.Invalid(f"Invalid IPv4 address: {value}")
+
+
 CORE_CONFIG_SCHEMA = vol.Schema(
     {
         vol.Optional("host", default="0.0.0.0"): str,
@@ -157,6 +180,13 @@ CORE_CONFIG_SCHEMA = vol.Schema(
             vol.Coerce(float), vol.Range(0, 1.0)
         ),
         vol.Optional("startup_scene_id", default=""): str,
+        vol.Optional(
+            "lifx_broadcast_address", default="255.255.255.255"
+        ): validate_ipv4_address,
+        vol.Optional("lifx_discovery_timeout", default=30): vol.All(
+            int, vol.Range(min=1, max=120)
+        ),
+        vol.Optional("sendspin_servers", default={}): dict,
     },
     extra=vol.ALLOW_EXTRA,
 )
@@ -312,7 +342,8 @@ def create_default_config(config_dir: str) -> str:
 
     except OSError:
         _LOGGER.critical(
-            f"Unable to create default configuration file {config_path}."
+            "Unable to create default configuration file %s.",
+            config_path,
         )
         return None
 
@@ -374,7 +405,8 @@ def ensure_config_directory(config_dir: str) -> None:
             os.mkdir(config_dir)
         except OSError:
             _LOGGER.critical(
-                f"Unable to create configuration directory at {config_dir}. Shutting down."
+                "Unable to create configuration directory at %s. Shutting down.",
+                config_dir,
             )
             # Exit with code 1 to indicate that there was an error creating the configuration directory.
             sys.exit(1)
@@ -396,15 +428,17 @@ def load_config(config_dir: str) -> dict:
     """
 
     config_file = ensure_config_file(config_dir)
-    print(
-        f"Loading config file: {os.path.join(os.path.abspath(config_dir), CONFIG_FILE_NAME)}"
+    _LOGGER.info(
+        "Loading config file: %s",
+        os.path.join(os.path.abspath(config_dir), CONFIG_FILE_NAME),
     )
     try:
         with open(config_file, encoding="utf-8") as file:
             config_json = json.load(file)
             try:
                 _LOGGER.info(
-                    f"LedFx Configuration Version: {config_json['configuration_version']}"
+                    "LedFx Configuration Version: %s",
+                    config_json["configuration_version"],
                 )
                 assert parse_version(
                     config_json["configuration_version"]
@@ -413,14 +447,19 @@ def load_config(config_dir: str) -> dict:
             except (KeyError, AssertionError):
                 create_backup(config_dir, "VERSION")
                 _LOGGER.warning(
-                    f"LedFx config version: {CONFIGURATION_VERSION}, your config version: {config_json.get('configuration_version', 'UNDEFINED (old!)')}"
+                    "LedFx config version: %s, your config version: %s",
+                    CONFIGURATION_VERSION,
+                    config_json.get(
+                        "configuration_version", "UNDEFINED (old!)"
+                    ),
                 )
                 try:
                     config = migrate_config(config_json)
                     save_config(config, config_dir)
                 except Exception as e:
                     _LOGGER.exception(
-                        f"Failed to migrate your config to the new standard :( Your old config is backed up safely. Please let a developer know what happened: {e}"
+                        "Failed to migrate your config to the new standard :( Your old config is backed up safely. Please let a developer know what happened: %s",
+                        e,
                     )
                     config = {}
                 return CORE_CONFIG_SCHEMA(config)
@@ -570,12 +609,17 @@ def migrate_config(old_config):
                     new_config[new_key] = old_config[old_key]
                 except (vol.MultipleInvalid, vol.InInvalid, Exception):
                     _LOGGER.warning(
-                        f"Preset for {effect_type} with config item {old_key} : {old_config[old_key]} is invalid. Discarding."
+                        "Preset for %s with config item %s : %s is invalid. Discarding.",
+                        effect_type,
+                        old_key,
+                        old_config[old_key],
                     )
                     continue
             else:
                 _LOGGER.warning(
-                    f"Preset for {effect_type} cannot match config item {old_key}. Discarding item from preset."
+                    "Preset for %s cannot match config item %s. Discarding item from preset.",
+                    effect_type,
+                    old_key,
                 )
                 continue
         return new_config
@@ -621,8 +665,11 @@ def migrate_config(old_config):
                 cfg["rgb_order"] = rgb_order
                 cfg["white_mode"] = white_mode
                 _LOGGER.warning(
-                    f"Migrated ArtNet device '{device.get('name', '')}' from output_mode={old_mode} "
-                    f"to rgb_order={rgb_order}, white_mode={white_mode}"
+                    "Migrated ArtNet device '%s' from output_mode=%s to rgb_order=%s, white_mode=%s",
+                    device.get("name", ""),
+                    old_mode,
+                    rgb_order,
+                    white_mode,
                 )
 
         device.pop("effect", None)
@@ -645,7 +692,9 @@ def migrate_config(old_config):
                     new_effect_id = get_matching_effect_id(effect_id)
                     if not new_effect_id:
                         _LOGGER.warning(
-                            f"Could not match effect id {effect_id} to any current effects. Discarding this effect from virtual {virtual['id']}."
+                            "Could not match effect id %s to any current effects. Discarding this effect from virtual %s.",
+                            effect_id,
+                            virtual["id"],
                         )
                         continue
                     new_effect_config = sanitise_effect_config(
@@ -664,7 +713,7 @@ def migrate_config(old_config):
         for device in new_config["devices"]:
             # Generate virtual configuration for the device
             name = device["config"]["name"]
-            _LOGGER.info(f"Creating a virtual for device {name}")
+            _LOGGER.info("Creating a virtual for device %s", name)
 
             virtual_config = {
                 "name": name,
@@ -693,7 +742,8 @@ def migrate_config(old_config):
         new_effect_id = get_matching_effect_id(effect_id)
         if not new_effect_id:
             _LOGGER.warning(
-                f"Could not match effect id {effect_id} to any current effects. Discarding presets for this effect."
+                "Could not match effect id %s to any current effects. Discarding presets for this effect.",
+                effect_id,
             )
             continue
         new_config["user_presets"][new_effect_id] = {}
@@ -731,7 +781,9 @@ def migrate_config(old_config):
                 )
                 if not corresponding_virtual:
                     _LOGGER.warning(
-                        f"Could not match device id {device} to any virtuals. Discarding this device from scene {scene_id}."
+                        "Could not match device id %s to any virtuals. Discarding this device from scene %s.",
+                        virtual_ish,
+                        scene_id,
                     )
                     continue
                 actual_virtual = corresponding_virtual
@@ -747,7 +799,9 @@ def migrate_config(old_config):
                 new_effect_id = get_matching_effect_id(effect_id)
                 if not new_effect_id:
                     _LOGGER.warning(
-                        f"Could not match effect id {effect_id} to any current effects. Discarding this effect from scene {scene_id}."
+                        "Could not match effect id %s to any current effects. Discarding this effect from scene %s.",
+                        effect_id,
+                        scene_id,
                     )
                     continue
                 new_effect_config = sanitise_effect_config(
@@ -793,7 +847,9 @@ def migrate_config(old_config):
                 current_flip = effect_config.get("flip_vertical", False)
                 effect_config["flip_vertical"] = not current_flip
                 _LOGGER.info(
-                    f"Inverted equalizer2d flip_vertical from {current_flip} to {not current_flip}"
+                    "Inverted equalizer2d flip_vertical from %s to %s",
+                    current_flip,
+                    not current_flip,
                 )
             return effect_config
 
@@ -882,7 +938,7 @@ def save_config(config: dict, config_dir: str) -> None:
     except NameError:
         load_logger()
 
-    _LOGGER.info(f"Saving configuration file to {config_dir}")
+    _LOGGER.info("Saving configuration file to %s", config_dir)
     config["configuration_version"] = CONFIGURATION_VERSION
     config_view = dict(config)
     unneeded_keys = ["ledfx_presets"]
@@ -909,7 +965,7 @@ def save_presets(config: dict, config_dir: str) -> None:
     """
 
     presets_file = check_preset_file(config_dir)
-    _LOGGER.info(f"Saving user presets to {config_dir}")
+    _LOGGER.info("Saving user presets to %s", config_dir)
 
     config_view = dict(config)
     for key in [key for key in config_view if key != "user_presets"]:

@@ -22,6 +22,17 @@ LedFx is a real-time LED visualization system that synchronizes LED lighting wit
 - **Dependencies**: Audio processing (aubio-ledfx, sounddevice), LED control (openrgb-python, sacn), web framework (aiohttp)
 - **Development Tools**: pre-commit hooks (black, flake8, isort, pyupgrade), VS Code integration
 
+### Command Execution
+
+**CRITICAL**: All Python commands MUST be run through `uv run`. Never use bare `python`, `pip`, or `pytest` directly.
+
+- Tests: `uv run pytest ...`
+- Scripts: `uv run python ...`
+- Linting: `uv run black ...`, `uv run flake8 ...`
+- Package ops: `uv sync`, `uv add`, NOT `pip install`
+
+Do NOT use `python -m pytest`, `python -m pip`, or activate the venv manually.
+
 ### Workspace Structure
 ```
 ledfx/                    # Main package
@@ -195,6 +206,59 @@ When testing input validation, especially for file paths and URLs, use patterns 
 3. **Special Filenames**: Reserved names (CON, PRN, NUL), control characters, homoglyphs
 4. **SSRF Protection**: Loopback addresses, private networks, metadata endpoints
 
+## Debugging Methodology
+
+### When Encountering Library/Dependency Errors
+
+**CRITICAL**: Never conclude a library is broken without following this systematic process:
+
+1. **Consult Documentation FIRST**
+   - Check package metadata: `uv pip show <package>`
+   - Read README/METADATA files in `.venv/Lib/site-packages/<package>*.dist-info/`
+   - Look for homepage, documentation URLs, and repository links
+   - Read usage examples in documentation
+
+2. **Test with Documented Examples**
+   - Copy exact examples from documentation and verify they work
+   - Only after documented examples work, adapt to your use case
+   - Compare your usage to examples to identify differences
+
+3. **Verify Your Assumptions**
+   - Check function signatures, expected argument types and shapes
+   - Verify data types (float32 vs float64, array shapes, axis order)
+   - Test with trivial cases before scaling up
+
+4. **Research Before Concluding**
+   - Check project issue tracker for similar problems
+   - Review changelog for version-specific behavior
+   - Search for known limitations or API changes
+
+5. **Only After Exhausting Above**
+   - Consider potential library bugs
+   - Create minimal reproducible examples
+   - File issues with maintainers if confirmed
+
+**NEVER**:
+- Jump to "the library is broken" as first conclusion
+- Make major architectural changes (switching libraries) without investigation
+- Assume error messages mean library failure without reading documentation
+- Skip documentation consultation when encountering unexpected behavior
+
+### Example: Third-Party Library Error
+
+```python
+# ❌ WRONG: Immediately assuming library is broken
+# AssertionError occurred -> "Library has a bug, switch to different library"
+
+# ✅ CORRECT: Systematic debugging
+# 1. Read package documentation/README
+# 2. Check usage examples in docs
+# 3. Test exact documented example
+# 4. Compare your code to documented usage
+# 5. Identify difference (e.g., array shape (N,3) vs (3,N))
+# 6. Fix your code to match documented API
+```
+
 ## Common Tasks
 
 ### Adding New API Endpoints
@@ -223,7 +287,7 @@ When testing input validation, especially for file paths and URLs, use patterns 
 ### Performance Optimization
 - Profile with `cProfile` for CPU bottlenecks
 - Use `numpy` operations instead of Python loops
-- Leverage vnoise for performance-critical noise generation
+- Leverage FastNoiseLite for performance-critical noise generation
 - Cache expensive calculations
 - Optimize network transmission
 

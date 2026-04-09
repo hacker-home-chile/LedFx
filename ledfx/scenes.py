@@ -92,11 +92,18 @@ class Scenes:
         self._scenes[scene_id] = scene_config
         self.save_to_config()
 
-    def activate(self, scene_id):
-        """Activate a scene with support for action field"""
+    def activate(self, scene_id, save_config_after=True):
+        """Activate a scene with support for action field
+
+        Args:
+            scene_id: The ID of the scene to activate
+            save_config_after: If True, saves config to disk after activation.
+                              Set to False for playlist-driven activations to reduce disk I/O.
+                              Defaults to True for backward compatibility.
+        """
         scene = self.get(scene_id)
         if not scene:
-            _LOGGER.error(f"No scene found with id: {scene_id}")
+            _LOGGER.error("No scene found with id: %s", scene_id)
             return False
 
         for virtual_id in scene["virtuals"]:
@@ -143,7 +150,8 @@ class Scenes:
                 effect_type = virtual_config.get("type")
                 if not effect_type:
                     _LOGGER.warning(
-                        f"Invalid activate config for virtual {virtual_id}, missing required 'type' field"
+                        "Invalid activate config for virtual %s, missing required 'type' field",
+                        virtual_id,
                     )
                     continue
 
@@ -160,7 +168,8 @@ class Scenes:
                     effect_config = virtual_config.get("config")
                     if effect_config is None:
                         _LOGGER.warning(
-                            f"Invalid activate config for virtual {virtual_id}, missing 'config' field"
+                            "Invalid activate config for virtual %s, missing 'config' field",
+                            virtual_id,
                         )
                         continue
 
@@ -175,13 +184,16 @@ class Scenes:
 
         self._ledfx.events.fire_event(SceneActivatedEvent(scene_id))
 
-        try:
-            save_config(
-                config=self._ledfx.config,
-                config_dir=self._ledfx.config_dir,
-            )
-        except Exception:
-            _LOGGER.exception("Failed to save config after scene activation")
+        if save_config_after:
+            try:
+                save_config(
+                    config=self._ledfx.config,
+                    config_dir=self._ledfx.config_dir,
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "Failed to save config after scene activation"
+                )
 
         return True
 
@@ -219,7 +231,9 @@ class Scenes:
 
         # Preset not found, fall back to reset preset
         _LOGGER.warning(
-            f"Preset '{preset_name}' not found for effect '{effect_type}', falling back to reset preset"
+            "Preset '%s' not found for effect '%s', falling back to reset preset",
+            preset_name,
+            effect_type,
         )
         return generate_default_config(self._ledfx.effects, effect_type)
 
@@ -227,7 +241,7 @@ class Scenes:
         """Deactivate the effects defined in a scene by clearing those virtuals."""
         scene = self.get(scene_id)
         if not scene:
-            _LOGGER.error(f"No scene found with id: {scene_id}")
+            _LOGGER.error("No scene found with id: %s", scene_id)
             return False
 
         for virtual_id in scene["virtuals"]:
@@ -255,7 +269,10 @@ class Scenes:
         """Deletes a scene"""
 
         if not self._scenes.pop(scene_id, None):
-            _LOGGER.error(f"Cannot delete non-existent scene id: {scene_id}")
+            _LOGGER.warning(
+                "Cannot delete non-existent scene id: %s", scene_id
+            )
+            return
         self._ledfx.events.fire_event(SceneDeletedEvent(scene_id))
         self.save_to_config()
 

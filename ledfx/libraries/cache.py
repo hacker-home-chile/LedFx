@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from ledfx.utilities.gradient_extraction import extract_gradient_metadata
 from ledfx.utilities.image_utils import get_image_metadata
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class ImageCache:
                 with open(self.metadata_file) as f:
                     return json.load(f)
             except Exception as e:
-                _LOGGER.warning(f"Failed to load cache metadata: {e}")
+                _LOGGER.warning("Failed to load cache metadata: %s", e)
                 return {"cache_entries": {}, "total_size": 0, "total_count": 0}
         return {"cache_entries": {}, "total_size": 0, "total_count": 0}
 
@@ -61,7 +62,7 @@ class ImageCache:
             with open(self.metadata_file, "w") as f:
                 json.dump(self.metadata, f, indent=2)
         except Exception as e:
-            _LOGGER.error(f"Failed to save cache metadata: {e}")
+            _LOGGER.error("Failed to save cache metadata: %s", e)
 
     def _generate_cache_key(
         self, url: str, params: Optional[dict] = None
@@ -110,10 +111,10 @@ class ImageCache:
                 entry["last_accessed"] = datetime.utcnow().isoformat()
                 entry["access_count"] = entry.get("access_count", 0) + 1
                 self._save_metadata()
-                _LOGGER.debug(f"Cache hit for {url}")
+                _LOGGER.debug("Cache hit for %s", url)
                 return cache_path
 
-        _LOGGER.debug(f"Cache miss for {url}")
+        _LOGGER.debug("Cache miss for %s", url)
         return None
 
     def put(
@@ -160,7 +161,7 @@ class ImageCache:
             with open(cache_path, "wb") as f:
                 f.write(data)
         except Exception as e:
-            _LOGGER.error(f"Failed to write cache file {cache_path}: {e}")
+            _LOGGER.error("Failed to write cache file %s: %s", cache_path, e)
             return
 
         # Update metadata
@@ -176,6 +177,21 @@ class ImageCache:
         width, height, img_format, n_frames, is_animated = get_image_metadata(
             cache_path
         )
+
+        # Extract gradient metadata only for original images, not thumbnails
+        # Thumbnails have params, original images don't
+        gradient_data = None
+        if params is None:
+            try:
+                gradient_data = extract_gradient_metadata(cache_path)
+            except Exception as e:
+                _LOGGER.warning(
+                    "Failed to extract gradients for %s: %s",
+                    url,
+                    e,
+                    exc_info=False,
+                )
+                # Continue without gradients - not a critical failure
 
         entry = {
             "url": url,
@@ -193,6 +209,7 @@ class ImageCache:
             "format": img_format,
             "n_frames": n_frames,
             "is_animated": is_animated,
+            "gradients": gradient_data,
         }
 
         self.metadata["cache_entries"][cache_key] = entry
@@ -202,7 +219,7 @@ class ImageCache:
         self._save_metadata()
         self._enforce_limits()
 
-        _LOGGER.info(f"Cached image from {url} ({len(data)} bytes)")
+        _LOGGER.info("Cached image from %s (%s bytes)", url, len(data))
 
     def _enforce_limits(self):
         """Evict LRU entries if cache exceeds size or count limits."""
@@ -224,7 +241,8 @@ class ImageCache:
             )[0]
 
             _LOGGER.info(
-                f"Evicting LRU cache entry: {self.metadata['cache_entries'][lru_key]['url']}"
+                "Evicting LRU cache entry: %s",
+                self.metadata["cache_entries"][lru_key]["url"],
             )
             self._delete(lru_key)
             evicted = True
@@ -244,7 +262,7 @@ class ImageCache:
                     os.remove(cache_path)
                 except Exception as e:
                     _LOGGER.warning(
-                        f"Failed to delete cache file {cache_path}: {e}"
+                        "Failed to delete cache file %s: %s", cache_path, e
                     )
 
             self.metadata["total_size"] -= entry["file_size"]
@@ -264,7 +282,7 @@ class ImageCache:
         """
         cache_key = self._generate_cache_key(url, params)
         if cache_key in self.metadata["cache_entries"]:
-            _LOGGER.info(f"Deleting cached image: {url} (params: {params})")
+            _LOGGER.info("Deleting cached image: %s (params: %s)", url, params)
             self._delete(cache_key)
             self._save_metadata()
             return True
@@ -297,7 +315,7 @@ class ImageCache:
         if deleted_count > 0:
             self._save_metadata()
             _LOGGER.info(
-                f"Deleted {deleted_count} cache entries for URL: {url}"
+                "Deleted %s cache entries for URL: %s", deleted_count, url
             )
 
         return deleted_count
@@ -317,7 +335,9 @@ class ImageCache:
 
         self._save_metadata()
         _LOGGER.info(
-            f"Cleared entire cache: {cleared_count} items, {freed_bytes} bytes"
+            "Cleared entire cache: %s items, %s bytes",
+            cleared_count,
+            freed_bytes,
         )
 
         return {"cleared_count": cleared_count, "freed_bytes": freed_bytes}
@@ -344,6 +364,7 @@ class ImageCache:
                 - format: Image format (PNG, JPEG, GIF, etc.)
                 - n_frames: Number of frames (1 for static, >1 for animated)
                 - is_animated: Boolean flag for animation
+                - gradients: Extracted gradient metadata (all variants) or None
 
             Note: Excludes thumbnail cache entries (entries with params or URLs starting with "asset://").
         """
@@ -360,6 +381,7 @@ class ImageCache:
                 "format": entry.get("format"),
                 "n_frames": entry.get("n_frames", 1),
                 "is_animated": entry.get("is_animated", False),
+                "gradients": entry.get("gradients"),
             }
             for entry in self.metadata["cache_entries"].values()
             if not entry["url"].startswith("asset://")

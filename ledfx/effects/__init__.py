@@ -22,6 +22,7 @@ class DummyEffect:
     _active = True
     is_active = _active
     NAME = name = ""
+    logsec = None
 
     def __init__(self, pixel_count):
         self.pixels = np.zeros((pixel_count, 3))
@@ -47,7 +48,9 @@ class DummyEffect:
         self.deactivate()
 
     def deactivate(self):
-        pass
+        self.pixels = None  # Free the numpy array
+        self._active = False
+        self.is_active = False
 
 
 def mix_colors(color_1: tuple, color_2: tuple, ratio: float) -> tuple:
@@ -353,7 +356,7 @@ class Effect(BaseRegistry):
                 if hasattr(base, "on_activate"):
                     base.on_activate(self, virtual.effective_pixel_count)
             self._active = True
-            _LOGGER.info(f"Effect {self.NAME} activated.")
+            _LOGGER.info("Effect %s activated.", self.NAME)
 
     def _deactivate(self):
         # we need this wrapper to ensure the full chain of
@@ -364,8 +367,15 @@ class Effect(BaseRegistry):
     def deactivate(self):
         """Detaches an output channel from the effect"""
         self.pixels = None
+        self._virtual = (
+            None  # Clear circular reference to allow garbage collection
+        )
+        # Clear LogSecHelper reference to this effect
+        if self.logsec:
+            self.logsec.effect = None
+            self.logsec.diag = False
         self._active = False
-        _LOGGER.info(f"Effect {self.NAME} deactivated.")
+        _LOGGER.info("Effect %s deactivated.", self.NAME)
 
     @classmethod
     def get_combined_default_schema(cls):
@@ -389,7 +399,7 @@ class Effect(BaseRegistry):
                 validated_config = type(self).schema()(config)
             except vol.Invalid as err:
                 _LOGGER.warning(
-                    f"Error updating effect {self.NAME} config: {err}"
+                    "Error updating effect %s config: %s", self.NAME, err
                 )
                 return
 
@@ -432,7 +442,7 @@ class Effect(BaseRegistry):
                     base.config_updated(self, self._config)
 
             _LOGGER.debug(
-                f"Effect {self.NAME} config updated to {validated_config}."
+                "Effect %s config updated to %s.", self.NAME, validated_config
             )
 
             if self._virtual:

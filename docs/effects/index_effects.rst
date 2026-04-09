@@ -18,7 +18,9 @@ Effects
    matrix/concentric
    matrix/digitalrain
    matrix/flame
+   matrix/frontend
    matrix/radial
+   matrix/smoke
    matrix/soap
    matrix/waterfall
    matrix/number

@@ -177,7 +177,9 @@ def resolve_safe_path_in_directory(
                 try:
                     os.makedirs(parent_dir, exist_ok=True)
                     _LOGGER.debug(
-                        f"Created {directory_name} subdirectory: {parent_dir}"
+                        "Created %s subdirectory: %s",
+                        directory_name,
+                        parent_dir,
                     )
                 except OSError as e:
                     return (
@@ -189,7 +191,9 @@ def resolve_safe_path_in_directory(
         return True, resolved_path, None
 
     except (ValueError, OSError) as e:
-        _LOGGER.warning(f"Path resolution failed for '{relative_path}': {e}")
+        _LOGGER.warning(
+            "Path resolution failed for '%s': %s", relative_path, e
+        )
         return False, None, f"Invalid path: {e}"
 
 
@@ -230,12 +234,13 @@ def validate_local_path(
                 continue
 
         _LOGGER.warning(
-            f"Path traversal attempt blocked: {file_path} is outside allowed directories"
+            "Path traversal attempt blocked: %s is outside allowed directories",
+            file_path,
         )
         return False, None
 
     except (ValueError, OSError) as e:
-        _LOGGER.warning(f"Invalid path rejected: {file_path} : {e}")
+        _LOGGER.warning("Invalid path rejected: %s : %s", file_path, e)
         return False, None
 
 
@@ -324,11 +329,15 @@ def is_allowed_image_extension(path: str) -> bool:
     """
     Check if file extension is in allowlist.
 
+    For remote URLs (http/https), allows URLs without extensions since content
+    will be validated after download via Content-Type header and PIL validation.
+    For local files, extension must be in the allowlist.
+
     Args:
         path: File path or URL to check
 
     Returns:
-        bool: True if extension is allowed
+        bool: True if extension is allowed or if remote URL without extension
     """
     # Parse URL to remove query strings and fragments
     parsed = urllib.parse.urlparse(path)
@@ -341,6 +350,13 @@ def is_allowed_image_extension(path: str) -> bool:
         path_to_check = path
 
     ext = os.path.splitext(path_to_check.lower())[1]
+
+    # For remote URLs, allow no extension (e.g., CDN URLs like https://cdn.example.com/image/abc123)
+    # Content will be validated after download via Content-Type header and PIL validation
+    if parsed.scheme in ("http", "https"):
+        return ext in ALLOWED_IMAGE_EXTENSIONS or not ext
+
+    # For local files, extension must be in allowlist
     return ext in ALLOWED_IMAGE_EXTENSIONS
 
 
@@ -388,14 +404,16 @@ def validate_pil_image(image: Image.Image) -> bool:
     """
     # Check format
     if image.format not in ALLOWED_PIL_FORMATS:
-        _LOGGER.warning(f"Rejected unsupported image format: {image.format}")
+        _LOGGER.warning("Rejected unsupported image format: %s", image.format)
         return False
 
     # Check pixel dimensions (prevent decompression bombs)
     if image.width * image.height > MAX_IMAGE_PIXELS:
         _LOGGER.warning(
-            f"Image too large: {image.width}x{image.height} pixels "
-            f"(max {MAX_IMAGE_PIXELS})"
+            "Image too large: %sx%s pixels (max %s)",
+            image.width,
+            image.height,
+            MAX_IMAGE_PIXELS,
         )
         return False
 

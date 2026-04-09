@@ -64,7 +64,7 @@ class Twod(AudioReactiveEffect):
         self.last_cycle_time = 20
         self.bar = 0
         self.t_height = max(1, self._virtual.config["rows"])
-        self.t_width = self.pixel_count // self.t_height
+        self.t_width = max(1, self.pixel_count // self.t_height)
         self.init = True
 
     def config_updated(self, config):
@@ -114,33 +114,42 @@ class Twod(AudioReactiveEffect):
             self.flip2d, self.mirror2d = self.mirror2d, self.flip2d
 
         self.t_height = max(1, self._virtual._config["rows"])
-        self.t_width = self.pixel_count // self.t_height
+        self.t_width = max(1, self.pixel_count // self.t_height)
 
         if self.rotate == 1 or self.rotate == 3:
             # swap width and height for render
-            self.r_width = self.t_height
-            self.r_height = self.t_width
+            self.r_width = max(1, self.t_height)
+            self.r_height = max(1, self.t_width)
         else:
-            self.r_width = self.t_width
-            self.r_height = self.t_height
+            self.r_width = max(1, self.t_width)
+            self.r_height = max(1, self.t_height)
 
         self.init = False
 
     def image_to_pixels(self):
         # image should be the right size to map in, at this point
         if self.flip2d:
+            old_matrix = self.matrix
             self.matrix = self.matrix.transpose(
                 Image.Transpose.FLIP_TOP_BOTTOM
             )
+            old_matrix.close()
         if self.mirror2d:
+            old_matrix = self.matrix
             self.matrix = self.matrix.transpose(
                 Image.Transpose.FLIP_LEFT_RIGHT
             )
+            old_matrix.close()
         if self.rotate_t != 0:
+            old_matrix = self.matrix
             self.matrix = self.matrix.transpose(self.rotate_t)
+            old_matrix.close()
         if self.matrix.size != (self.t_width, self.t_height):
             _LOGGER.error(
-                f"Matrix is wrong size {self.matrix.size} vs r {(self.r_width, self.r_height)} vs t {(self.t_width, self.t_height)}"
+                "Matrix is wrong size %s vs r %s vs t %s",
+                self.matrix.size,
+                (self.r_width, self.r_height),
+                (self.t_width, self.t_height),
             )
 
         rgb_array = np.frombuffer(self.matrix.tobytes(), dtype=np.uint8)
@@ -156,7 +165,12 @@ class Twod(AudioReactiveEffect):
             # show image on screen
             self.matrix.show()
             _LOGGER.info(
-                f"dump {self.t_width}x{self.t_height} R: {self.rotate_t} F: {self.flip2d} M: {self.mirror2d}"
+                "dump %sx%s R: %s F: %s M: %s",
+                self.t_width,
+                self.t_height,
+                self.rotate_t,
+                self.flip2d,
+                self.mirror2d,
             )
 
     def draw_test(self, rgb_draw):
@@ -202,6 +216,13 @@ class Twod(AudioReactiveEffect):
     def render(self):
         if self.init:
             self.do_once()
+
+        # Close old matrix before creating new one to prevent memory leak
+        if hasattr(self, "matrix") and self.matrix:
+            try:
+                self.matrix.close()
+            except Exception:
+                pass
 
         if self.bg_color_use and self.background_mode == "overwrite":
             self.matrix = Image.new(

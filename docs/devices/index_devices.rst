@@ -10,5 +10,7 @@ Devices
    artnet
    ddp
    govee
+   lifx
+   nanoleaf
    osc
    twinkly_squares
