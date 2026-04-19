@@ -560,12 +560,28 @@ class MQTT_HASS(Integration):
                     )
                     try:
                         virtual.set_effect(effect)
-                        virtual.active = payload.get("state", "off") == "on"
-
                     except (ValueError, RuntimeError) as msg:
                         _LOGGER.warning(msg)
                 else:
                     _LOGGER.debug("COLOR: %s", color)
+
+                if "state" in payload:
+                    want_on = payload["state"] == "on"
+                    if want_on and virtual.active_effect is None:
+                        try:
+                            virtual.set_effect(
+                                self._ledfx.effects.create(
+                                    ledfx=self._ledfx,
+                                    type="singleColor",
+                                    config={"color": "white"},
+                                )
+                            )
+                        except (ValueError, RuntimeError) as msg:
+                            _LOGGER.warning(msg)
+                    try:
+                        virtual.active = want_on
+                    except (ValueError, RuntimeError) as msg:
+                        _LOGGER.warning(msg)
                     # effect = self._ledfx.effects.create(
                     #     ledfx=self._ledfx,
                     #     type="singleColor",
