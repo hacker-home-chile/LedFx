@@ -214,11 +214,17 @@ class FIFOAudioStream:
 
                 retry_delay = 1.0  # Reset on success
 
+                # FIFO writes may arrive in 50 ms bursts and reads may split
+                # anywhere, including inside a stereo frame. Assemble complete
+                # analysis blocks and deliver them on a steady sample clock.
+                pending = bytearray()
+                next_callback = None
+                callback_period = self.CHUNK_SAMPLES / self.SAMPLE_RATE
                 # Read loop
                 _LOGGER.warning(f"Entering read loop. active={self._active}, stop_event={self._stop_event.is_set()}")
                 while not self._stop_event.is_set() and self._active:
                     try:
-                        raw_data = os.read(self._fifo_fd, chunk_size_bytes)
+                        raw_data = os.read(self._fifo_fd, chunk_size_bytes - len(pending))
                         _LOGGER.debug(f"Read {len(raw_data)} bytes from FIFO")
 
                         if not raw_data:  # EOF - writer disconnected
@@ -229,9 +235,21 @@ class FIFOAudioStream:
                             self._stop_event.wait(1.0)
                             break  # Restart outer loop to reopen
 
-                        # Convert and invoke callback
+                        pending.extend(raw_data)
+                        if len(pending) < chunk_size_bytes:
+                            continue
+                        now = time.monotonic()
+                        if next_callback is None or now - next_callback > 3 * callback_period:
+                            next_callback = now
+                        if self._stop_event.wait(max(0.0, next_callback - now)):
+                            break
+                        next_callback += callback_period
+
+                        # Convert only complete blocks; never stretch a short
+                        # pipe read into a whole analysis interval.
                         try:
-                            audio_data = self._convert_pcm_to_float32(raw_data)
+                            audio_data = self._convert_pcm_to_float32(bytes(pending))
+                            pending.clear()
                             if self._active:
                                 self.callback(audio_data, None, None, None)
                         except struct.error as e:
