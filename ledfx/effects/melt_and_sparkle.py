@@ -13,6 +13,7 @@ from ledfx.effects.math import triangle
 class MeltSparkle(AudioReactiveEffect, HSVEffect):
     NAME = "Melt and Sparkle"
     CATEGORY = "Atmospheric"
+    USES_MELBANK_RANGE = True
 
     CONFIG_SCHEMA = vol.Schema(
         {
@@ -168,7 +169,7 @@ class MeltSparkle(AudioReactiveEffect, HSVEffect):
         self.array_sin(self.v)
         np.add(self.v, (1.0 - t1), out=self.v)
         self.v = triangle(self.v)
-        np.add(self.v, bass_factor * self._direction, out=self.v)
+        np.add(self.v, bass_factor, out=self.v)
         self.v = triangle(self.v)
 
         # The power operation effectively adjusts the amount of black between

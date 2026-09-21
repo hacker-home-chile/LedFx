@@ -13,6 +13,23 @@ If you are running an older Python version, Sendspin will not appear as an optio
 Check `http://your-ledfx-ip:8888/api/info` — the `sendspin` feature flag should be `true`.
 ::::
 
+:::: note
+::: title
+**VERSION COMPATIBILITY (MUSIC ASSISTANT)**
+:::
+Sendspin client/server protocol changes can break interoperability across major `aiosendspin` lines.
+
+As of Music Assistant `2.9.13`, the server side uses `aiosendspin[server]==6.0.5` as of August 21st 2026
+LedFx is pinned to the compatible 6.x client line:
+
+- `aiosendspin>=6.0.5,<7.0.0` (Python 3.12+)
+
+If Music Assistant upgrades to a newer major protocol line, LedFx may also need a coordinated `aiosendspin` update.
+Typical mismatch symptom in `ledfx.log`:
+
+- `HandshakeAbortedError: expected server/init (TEXT), got CLOSE`
+::::
+
 ## Overview
 
 Instead of capturing audio from a local sound device, LedFx connects to a Sendspin server over the network via WebSocket. Audio is streamed in real-time and fed directly into LedFx's audio processing pipeline, enabling visualizations that are perfectly synchronized with the playback on other Sendspin clients.
@@ -88,5 +105,21 @@ When activated, LedFx will:
 3. Begin receiving audio chunks with timing information
 4. Feed the audio into the visualization pipeline synchronized with all other sendspin audio end points.
 5. If the connection drops, LedFx will automatically attempt to reconnect with exponential backoff.
+
+## Always-On Mode
+
+Sendspin Always On is enabled by default. With this setting enabled, the Sendspin connection can stay active regardless of whether any effects are running.
+
+This is a global setting found in the sendspin server management dialog (`sendspin_always_on`).
+
+When enabled:
+
+- The Sendspin audio stream starts immediately when a Sendspin device is selected, even without active effects.
+- The stream remains active if all effects are removed.
+- On boot, if a Sendspin device was previously selected and this setting is `true`, the stream starts automatically.
+
+When disabled, Sendspin follows normal audio lifecycle behavior and may deactivate when no audio-reactive effects are subscribed.
+
+This is useful for integrations where you want LedFx to be ready to visualize audio the moment playback begins, without requiring an effect to be pre-configured.
 
 

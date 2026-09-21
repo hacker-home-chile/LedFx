@@ -12,13 +12,15 @@ LedFx now uses [aubio-ledfx](https://pypi.org/project/aubio-ledfx/) which is hos
 
 ### Common Steps
 
-1. Install [python](https://www.python.org/downloads/) version 3.10 or above. 3.12 is the current preferred python release for general development.
+1. Install [python](https://www.python.org/downloads/) version 3.10 through 3.13. 3.12 is the current preferred python release for general development.
 :::: note
 ::: title
 Note
 :::
 
 Python 3.13 is supported, but Hue lights integration will currently not be functional due to mbedtls dependency.
+
+Python versions outside this range (e.g., 3.14+) are explicitly unsupported and may cause non-deterministic failures.
 ::::
 2. Install [git](https://git-scm.com/).
 
@@ -79,10 +81,25 @@ This assumes an apt based system such as ubuntu. If your system uses another pac
 
     ```console
     $ sudo apt install libatlas3-base \
-          libavformat58 \
           portaudio19-dev \
           pulseaudio \
-          cmake \
+          cmake
+    ```
+
+2. The libavformat dependancy either need the specific lib according to your OS and release version or just install ffmpeg
+
+    ```console
+    $ apt-cache search libavformat
+    ```
+
+    Look for the relevant lib of the format libavformatXX, for example
+
+    libavformat60 - FFmpeg library with (de)muxers for multimedia containers - runtime files
+
+    Install that specific generation
+
+    ```console
+    $ sudo apt install libavformatXX
     ```
 
 ### macOS Specific Steps {#macos-dev}
@@ -385,4 +402,3 @@ It is easy to see even slow leaks by running for large time periods under pressu
 The Teleplot naming convention will be <virtual_id>_MB
 
 ![Everytime I learn something new I forget something else](/_static/developer/memlog_MB.png)
-

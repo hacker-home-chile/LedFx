@@ -30,6 +30,9 @@ class AudioDevicesEndpoint(RestEndpoint):
 
         response = {}
         response["active_device_index"] = audio_config["audio_device"]
+        response["active_device_name"] = audio_config.get(
+            "audio_device_name", ""
+        )
         response["devices"] = (
             AudioInputSource.input_devices()
         )  # dict(enumerate(input_devices))
@@ -67,14 +70,20 @@ class AudioDevicesEndpoint(RestEndpoint):
         # Update and save config
         new_config = self._ledfx.config.get("audio", {})
         new_config["audio_device"] = int(index)
-        self._ledfx.config["audio"] = new_config
+        # When user explicitly selects a new device via API, replace any stale
+        # stored name with the current name for that selected index. This keeps
+        # the live selection consistent now and preserves boot-time name-based
+        # recovery if indices drift before the next restart.
+        new_config["audio_device_name"] = AudioInputSource.input_devices().get(
+            int(index), ""
+        )
+
+        if self._ledfx.audio:
+            self._ledfx.audio.update_config(new_config)
 
         save_config(
             config=self._ledfx.config,
             config_dir=self._ledfx.config_dir,
         )
-
-        if self._ledfx.audio:
-            self._ledfx.audio.update_config(new_config)
 
         return await self.request_success()

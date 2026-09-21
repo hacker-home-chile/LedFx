@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+import uuid
 
 import voluptuous as vol
 from packaging.version import parse as parse_version
@@ -47,8 +48,11 @@ CORE_CONFIG_KEYS_NO_RESTART = [
     "flush_on_deactivate",
     "ui_brightness_boost",
     "startup_scene_id",
+    "startup_playlist_id",
     "lifx_broadcast_address",
     "lifx_discovery_timeout",
+    "sendspin_always_on",
+    "now_playing",
 ]
 # Collection of keys that are used for visualisation configuration - used to check if we need to restart the visualisation event listeners
 VISUALISATION_CONFIG_KEYS = [
@@ -180,16 +184,33 @@ CORE_CONFIG_SCHEMA = vol.Schema(
             vol.Coerce(float), vol.Range(0, 1.0)
         ),
         vol.Optional("startup_scene_id", default=""): str,
+        vol.Optional("startup_playlist_id", default=""): str,
         vol.Optional(
             "lifx_broadcast_address", default="255.255.255.255"
         ): validate_ipv4_address,
         vol.Optional("lifx_discovery_timeout", default=30): vol.All(
             int, vol.Range(min=1, max=120)
         ),
+        vol.Optional("instance_id", default=""): str,
         vol.Optional("sendspin_servers", default={}): dict,
+        vol.Optional("sendspin_always_on", default=True): bool,
+        vol.Optional("now_playing", default={}): dict,
     },
     extra=vol.ALLOW_EXTRA,
 )
+
+
+def ensure_instance_id(config):
+    """
+    Ensure the config has a persistent LedFx instance UUID.
+
+    Generates a random UUID if ``instance_id`` is missing or empty and
+    stores it back in *config* so it is saved on the next
+    :func:`save_config` call.  The value is stable across restarts and
+    uniquely identifies this LedFx installation.
+    """
+    if not config.get("instance_id"):
+        config["instance_id"] = str(uuid.uuid4())
 
 
 def load_logger():

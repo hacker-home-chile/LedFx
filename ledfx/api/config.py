@@ -249,7 +249,17 @@ class ConfigEndpoint(RestEndpoint):
             config, CORE_CONFIG_SCHEMA, "core"
         )
 
-        self._ledfx.config["audio"].update(audio_config)
+        # When user explicitly selects a new device via API, replace any stale
+        # stored name with the current name for that selected index. This keeps
+        # the live selection consistent now and preserves boot-time name-based
+        # recovery if indices drift before the next restart.
+        if "audio_device" in audio_config:
+            audio_config[
+                "audio_device_name"
+            ] = AudioInputSource.input_devices().get(
+                audio_config["audio_device"], ""
+            )
+
         self._ledfx.config["melbanks"].update(melbanks_config)
         self._ledfx.config.update(core_config)
 
@@ -262,12 +272,19 @@ class ConfigEndpoint(RestEndpoint):
             else:
                 self._ledfx.config["wled_preferences"][key] = wled_config[key]
 
-        if (
-            hasattr(self._ledfx, "audio")
-            and self._ledfx.audio is not None
-            and audio_config
-        ):
-            self._ledfx.audio.update_config(self._ledfx.config["audio"])
+        if audio_config:
+            if hasattr(self._ledfx, "audio") and self._ledfx.audio is not None:
+                self._ledfx.audio.update_config(audio_config)
+            # Merge into persisted config AFTER update_config so that
+            # update_config's old-vs-new comparison sees the unmodified old
+            # values (self._config may be the same object as
+            # self._ledfx.config["audio"] after _persist_config replaces it).
+            self._ledfx.config["audio"].update(audio_config)
+
+            if hasattr(self._ledfx, "reconcile_sendspin_always_on_runtime"):
+                self._ledfx.reconcile_sendspin_always_on_runtime(
+                    "audio_config_updated"
+                )
 
         if hasattr(self._ledfx, "audio") and melbanks_config:
             self._ledfx.audio.melbanks.update_config(

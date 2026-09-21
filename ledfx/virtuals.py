@@ -246,9 +246,12 @@ class Virtual:
         # Group segments by device for batch adding
         segments_by_device = {}
         for device_id, start_pixel, end_pixel, _invert in segments:
-            # Skip gap devices - they are placeholders for empty space
+            # Skip gap devices - they are configuration placeholders, never
+            # registered in the device registry (so device will be None)
+            if device_id.startswith("gap-"):
+                continue
             device = self._ledfx.devices.get(device_id)
-            if is_gap_device(device):
+            if device is None or is_gap_device(device):
                 continue
             if device_id not in segments_by_device:
                 segments_by_device[device_id] = []
@@ -277,6 +280,11 @@ class Virtual:
 
         # Get device for validation
         device = self._ledfx.devices.get(device_id)
+
+        # gap- IDs are configuration placeholders that are never registered
+        # as real devices, so skip validation entirely
+        if device_id.startswith("gap-"):
+            return segment
 
         if device is None:
             msg = f"Invalid device id: {device_id}"
@@ -1300,7 +1308,8 @@ class Virtual:
         return list(
             self._ledfx.devices.get(device_id)
             for device_id in {segment[0] for segment in self._segments}
-            if not is_gap_device(self._ledfx.devices.get(device_id))
+            if not device_id.startswith("gap-")
+            and self._ledfx.devices.get(device_id) is not None
         )
 
     @cached_property
@@ -1845,3 +1854,87 @@ def virtual_id_validator(virtual_id: str) -> str:
         str: the validated virtual ID
     """
     return virtual_id
+
+
+def apply_config_to_active_effects(
+    virtuals,
+    config_updates: dict,
+    target_ids: set | None = None,
+) -> tuple[int, int]:
+    """Apply *config_updates* to every active effect on the given virtuals.
+
+    For each virtual the function:
+    1. Skips virtuals not in *target_ids* (when provided).
+    2. Skips virtuals without an active effect or with a ``DummyEffect``.
+    3. Filters *config_updates* against the effect's schema and
+       ``HIDDEN_KEYS``, resolving ``"toggle"`` for boolean keys.
+    4. Calls ``update_config`` / ``update_effect_config``.
+
+    Args:
+        virtuals: iterable of ``Virtual`` instances (e.g. ``ledfx.virtuals.values()``).
+        config_updates: key/value pairs to push into each compatible effect.
+        target_ids: when not ``None``, only update virtuals whose ``.id``
+            is in this set.
+
+    Returns:
+        ``(updated, skipped)`` counts.
+    """
+    updated = 0
+    skipped = 0
+
+    for virtual in virtuals:
+        if target_ids is not None and virtual.id not in target_ids:
+            continue
+
+        eff = getattr(virtual, "active_effect", None)
+        if eff is None or isinstance(eff, DummyEffect):
+            continue
+
+        # Get effect schema and hidden keys
+        try:
+            schema = type(eff).schema().schema
+            hidden_keys = getattr(eff, "HIDDEN_KEYS", []) or []
+        except Exception:
+            schema = {}
+            hidden_keys = []
+
+        # Normalise schema keys (handle vol.Optional/Required wrappers)
+        normalized_keys = set()
+        for schema_key in schema.keys():
+            if hasattr(schema_key, "schema"):
+                normalized_keys.add(schema_key.schema)
+            else:
+                normalized_keys.add(str(schema_key))
+
+        # Build per-effect update
+        effect_config_update = {}
+        for key, value in config_updates.items():
+            if key not in normalized_keys:
+                continue
+            if key in hidden_keys:
+                continue
+
+            # Handle toggle for boolean keys
+            if value == "toggle" and key in ("flip", "mirror"):
+                current_value = getattr(eff, "_config", {}).get(key, False)
+                effect_config_update[key] = not current_value
+            else:
+                effect_config_update[key] = value
+
+        if not effect_config_update:
+            skipped += 1
+            continue
+
+        try:
+            eff.update_config(effect_config_update)
+            virtual.update_effect_config(eff)
+            updated += 1
+        except Exception as exc:
+            _LOGGER.warning(
+                "Failed to update config on virtual %s: %s",
+                getattr(virtual, "id", "?"),
+                exc,
+            )
+            skipped += 1
+
+    return updated, skipped

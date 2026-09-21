@@ -27,7 +27,7 @@ dependencies = [
     "zeroconf>=0.131.0",
     "pillow>=10.1.0",
     "flux-led>=1.0.4",
-    "lifx-async>=5.1.0",
+    "lifx-async>=6.5.1",
     "python-osc>=1.8.3",
     "pybase64~=1.4.0",
     "mss~=10.1.0",
@@ -42,10 +42,14 @@ dependencies = [
     "xled>=0.7.0",
     "samplerate-ledfx>=0.2.3",
     "audio-hotplug>=0.1.0",
-    "aiosendspin>=4.0.0; python_version >= '3.12'",
+    "aiosendspin>=6.0.5,<7.0.0; python_version >= '3.12'",
+    "pyflac>=2.2.0; python_version >= '3.12'",
+    "winrt-Windows.Foundation>=2.0.0; sys_platform == \"win32\"",
+    "winrt-Windows.Media.Control>=2.0.0; sys_platform == \"win32\"",
+    "dbus-fast>=5.0.22,<6.0.0; sys_platform == \"linux\"",
 ]
 name = "LedFx"
-version = "2.1.8"
+version = "2.1.9"
 description = "A network based light effect controller"
 readme = "README.rst"
 
@@ -61,7 +65,7 @@ dev = [
     "pytest-order<2.0.0,>=1.2.0",
     "pytest-timeout>=2.3.0,<3.0.0",
     "ruff>=0.14.0,<0.15.0",
-    "lifx-emulator-core>=3.1.0",
+    "lifx-emulator-core>=3.8.0",
 ]
 build = ["pyinstaller<7.0.0,>=6.3.0"]
 docs = [

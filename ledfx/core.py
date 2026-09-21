@@ -22,6 +22,7 @@ from ledfx.config import (
     VISUALISATION_CONFIG_KEYS,
     Transmission,
     create_backup,
+    ensure_instance_id,
     get_ssl_certs,
     load_config,
     remove_virtuals_active_effects,
@@ -41,8 +42,13 @@ from ledfx.events import (
 from ledfx.http_manager import HttpServer
 from ledfx.integrations import Integrations
 from ledfx.mdns_manager import ZeroConfRunner
+from ledfx.nowplaying import NowPlayingService
+from ledfx.nowplaying.providers.mpris import MPRISNowPlayingProvider
+from ledfx.nowplaying.providers.smtc import SMTCNowPlayingProvider
+from ledfx.playlists import PlaylistManager
 from ledfx.presets import ledfx_presets
 from ledfx.scenes import Scenes
+from ledfx.sendspin.config import eager_start as sendspin_eager_start
 from ledfx.tools.ts_generator import generate_typescript_types
 from ledfx.utils import (
     RollingQueueHandler,
@@ -96,6 +102,7 @@ class LedFxCore:
             create_backup(config_dir, "DELETE")
 
         self.config = load_config(config_dir)
+        ensure_instance_id(self.config)
         self.config["hosts"] = get_sorted_physical_ips()
 
         if clear_effects:
@@ -132,6 +139,8 @@ class LedFxCore:
 
         # Audio device monitor will be started after loop is running
         self.audio_device_monitor = None
+        self._mpris_now_playing = None
+        self._smtc_now_playing = None
 
         if self.config.get("debug_asyncio", False):
             self.loop.set_debug(True)
@@ -155,7 +164,8 @@ class LedFxCore:
         """
         Handles the update of the base configuration where there are specific things that need to be done.
 
-        Currently, only visualisation configuration is handled this way, since they require the creation of new event listeners.
+        Currently handles visualisation configuration (requires new event listeners)
+        and sendspin_always_on runtime updates (via centralized reconcile logic).
 
         Args:
             event (Event): The event that triggered the update - this will always be a BaseConfigUpdateEvent.
@@ -166,6 +176,35 @@ class LedFxCore:
                 "Visualisation configuration updated - resetting visualisation event listeners."
             )
             self.setup_visualisation_events()
+
+        if "sendspin_always_on" in event.config:
+            self.reconcile_sendspin_always_on_runtime("base_config_update")
+
+    def reconcile_sendspin_always_on_runtime(self, trigger: str):
+        """Reconcile runtime Sendspin always-on behavior from current config.
+
+        This centralizes policy decisions so API/config/server hooks only need
+        to signal *when* to re-check, not duplicate *what* to do.
+        """
+        if self.config.get("sendspin_always_on", True):
+            _LOGGER.debug(
+                "sendspin reconcile (%s): always-on enabled, checking eager start.",
+                trigger,
+            )
+            try:
+                sendspin_eager_start(self)
+            except Exception as exc:
+                _LOGGER.warning(
+                    "sendspin reconcile (%s) failed: %s", trigger, exc
+                )
+            return
+
+        if hasattr(self, "audio") and self.audio is not None:
+            _LOGGER.debug(
+                "sendspin reconcile (%s): always-on disabled, checking deactivate.",
+                trigger,
+            )
+            self.audio.check_and_deactivate()
 
     def dev_enabled(self):
         return self.config["dev_mode"]
@@ -217,7 +256,9 @@ class LedFxCore:
         if not SENDSPIN_AVAILABLE:
             return
 
-        from ledfx.effects.audio import SENDSPIN_SERVERS
+        from ledfx.effects.audio import SENDSPIN_SERVERS, AudioInputSource
+
+        previous_valid = AudioInputSource.valid_device_indexes()
 
         sendspin_config = self.config.get("sendspin_servers", {})
         SENDSPIN_SERVERS.clear()
@@ -227,6 +268,25 @@ class LedFxCore:
 
         if sendspin_config:
             _LOGGER.info("Loaded %d Sendspin server(s)", len(sendspin_config))
+
+        # Log what the audio system sees immediately after loading
+        try:
+            valid = AudioInputSource.valid_device_indexes()
+            _LOGGER.debug(
+                "_load_sendspin_servers: valid_device_indexes after load = %s",
+                valid,
+            )
+
+            if valid != previous_valid:
+                self.events.fire_event(AudioDeviceListChangedEvent())
+        except Exception as exc:
+            _LOGGER.debug(
+                "_load_sendspin_servers: could not query devices: %s", exc
+            )
+
+        # Runtime path: server changes can alter whether the configured
+        # Sendspin source is currently available.
+        self.reconcile_sendspin_always_on_runtime("sendspin_servers_loaded")
 
     def loop_exception_handler(self, loop, context):
         kwargs = {}
@@ -468,6 +528,17 @@ class LedFxCore:
             max_items=cache_config.get("max_items", 500),
         )
 
+        # Initialize Now Playing Service
+        self.now_playing = NowPlayingService(self)
+
+        # Start SMTC Now Playing provider (Windows-only; no-op elsewhere)
+        self._smtc_now_playing = SMTCNowPlayingProvider(self)
+        self._smtc_now_playing.start()
+
+        # Start MPRIS Now Playing provider (Linux-only; no-op elsewhere)
+        self._mpris_now_playing = MPRISNowPlayingProvider(self)
+        self._mpris_now_playing.start()
+
         self.devices = Devices(self)
         self.effects = Effects(self)
         self.virtuals = Virtuals(self)
@@ -582,9 +653,28 @@ class LedFxCore:
                     self.config["startup_scene_id"],
                 )
 
+        await self._handle_startup_playlist()
+
         if pause_all:
             # pause at the virtuals level
             self.virtuals.pause_all()
+
+    async def _handle_startup_playlist(self):
+        """Activate the configured startup playlist, if any."""
+        if self.config["startup_playlist_id"] != "":
+            if not hasattr(self, "playlists"):
+                self.playlists = PlaylistManager(self)
+            pid = self.config["startup_playlist_id"]
+            if await self.playlists.start(pid):
+                _LOGGER.info(
+                    "startup_playlist_id: %s started.",
+                    pid,
+                )
+            else:
+                _LOGGER.warning(
+                    "startup_playlist_id: %s could not be started.",
+                    pid,
+                )
 
     def stop(self, exit_code):
         async_fire_and_forget(self.async_stop(exit_code), self.loop)
@@ -607,6 +697,18 @@ class LedFxCore:
                     _LOGGER.warning(
                         "Error stopping audio device monitor: %s", e
                     )
+
+            if self._smtc_now_playing is not None:
+                try:
+                    self._smtc_now_playing.stop()
+                except Exception as e:
+                    _LOGGER.warning("Error stopping SMTC provider: %s", e)
+
+            if self._mpris_now_playing is not None:
+                try:
+                    self._mpris_now_playing.stop()
+                except Exception as e:
+                    _LOGGER.warning("Error stopping MPRIS provider: %s", e)
 
             _LOGGER.info("Stopping HTTP Server...")
             await self.http.stop()

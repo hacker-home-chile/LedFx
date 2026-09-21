@@ -8,7 +8,22 @@ This section contains a limited set of detailed guides for developers working wi
 gradient_extraction
 melbanks
 websocket_client_examples
-client_sync_migration_guide
+```
+
+## Developer Notes
+
+Reference notes covering architecture decisions, investigations, and implementation details.
+
+```{toctree}
+:maxdepth: 1
+
+dev_notes/now_playing_architecture
+dev_notes/linux_now_playing
+dev_notes/albumart_musicbrainz
+dev_notes/sendspin_network_resilience_test_plan
+dev_notes/audio-device-persistence-strategy
+dev_notes/audio-fallback-investigation
+dev_notes/client_sync_migration_guide
 ```
 
 ## Related Documentation

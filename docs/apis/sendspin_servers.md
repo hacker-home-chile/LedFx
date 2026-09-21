@@ -8,6 +8,14 @@ LedFx provides REST API endpoints for managing Sendspin server connections. [Sen
 
 **Availability:** Requires Python 3.12+ and the `aiosendspin` package installed. On Python < 3.12 or without the package, all endpoints return a `501 Not Implemented` equivalent response.
 
+### Protocol Compatibility
+
+Version and interoperability guidance is maintained in one place:
+
+- [Sendspin settings compatibility notes](/settings/sendspin.md)
+
+If the server and client are on incompatible protocol lines, API configuration may still look valid while runtime connection attempts fail.
+
 ### Detecting Availability
 
 Before rendering Sendspin UI, frontends should check the `features.sendspin` flag from `GET /api/info`:
@@ -317,9 +325,9 @@ All mutating operations (`POST`, `PUT`, `DELETE`) immediately update the in-memo
 
 1. The `config.json` `sendspin_servers` key is written.
 2. `SENDSPIN_SERVERS` (from `ledfx.effects.audio`) is updated in-place.
-3. If the currently active audio source is `SENDSPIN {id}`, changing or removing that server causes the audio system to fall back to the default audio device.
+3. If the currently active audio source is `SENDSPIN: {id}`, changing or removing that server reconciles the active Sendspin stream (restart on URL change, stop on removal).
 
-> **Note:** A server appearing in `SENDSPIN_SERVERS` does **not** mean LedFx is actively streaming from it. The connection is only established when the user selects that server as the active audio input device (via `PUT /api/config` with `audio_device = "SENDSPIN living-room"`).
+> **Note:** A server appearing in `SENDSPIN_SERVERS` does **not** mean LedFx is actively streaming from it. The connection is only established when the user selects that server as the active audio input device (device name format: `SENDSPIN: living-room`).
 
 ---
 
